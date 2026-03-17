@@ -1,6 +1,8 @@
 # Personality-Conditioned Multi-Agent Crypto Trading System
 
-> 基于 Big Five (OCEAN) 人格模型的多 Agent 加密货币纸上交易系统
+> **English | [中文](README_CN.md)**
+
+> A Multi-Agent Crypto Paper Trading System driven by Big Five (OCEAN) Personality Model
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-126%20passed-brightgreen.svg)](#)
