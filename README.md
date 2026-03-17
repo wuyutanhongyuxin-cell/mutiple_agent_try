@@ -5,7 +5,7 @@
 > A Multi-Agent Crypto Paper Trading System driven by Big Five (OCEAN) Personality Model
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-126%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-148%20passed-brightgreen.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -32,8 +32,8 @@ Multiple agents run in parallel, each making independent decisions via LLM (thro
              └───────┬───────┘               │
                      ▼                       │
               ┌──────────────┐               │
-              │   LLM Call   │◄──────────────┘
-              │  (litellm)   │
+              │  LLM Call    │◄──────────────┘
+              │ (3x voting)  │
               └──────┬───────┘
                      ▼
               ┌──────────────┐
@@ -42,7 +42,7 @@ Multiple agents run in parallel, each making independent decisions via LLM (thro
               └──────┬───────┘
                      ▼
               ┌──────────────┐
-              │ Paper Trader │  → PnL, Sharpe, MaxDD
+              │ Paper Trader │  → PnL - costs (slippage + fees + funding)
               └──────────────┘
 ```
 
@@ -57,6 +57,9 @@ Multiple agents run in parallel, each making independent decisions via LLM (thro
 | **Deterministic constraints** | `trait_to_constraint.py` uses fixed formulas, no LLM influence |
 | **Agent isolation** | Each agent has independent memory, positions, and PnL |
 | **No float for money** | All financial calculations use `decimal.Decimal` |
+| **Realistic costs** | Slippage + taker fees + 8h funding rate on every trade |
+| **Multi-sample consistency** | 3 LLM calls per decision with majority voting |
+| **Anti look-ahead bias** | Asset anonymization prevents LLM from recalling historical prices |
 
 ---
 
@@ -109,34 +112,101 @@ min_confidence       = clip(C * 0.008, 0.2, 0.8)
 ```
 personality-trading-agents/
 ├── config/
-│   ├── agents.yaml          # Agent personality configs (OCEAN params)
-│   ├── trading.yaml         # Trading params (assets, data feed, risk)
-│   └── llm.yaml             # LLM provider config
+│   ├── agents.yaml              # Agent personality configs (OCEAN params)
+│   ├── trading.yaml             # Trading params, costs, risk, anonymization
+│   └── llm.yaml                 # LLM config + multi-sample + rate limiting
 ├── src/
-│   ├── personality/         # OCEAN model, constraint mapping, prompt generation
-│   ├── agent/               # Base agent, trading agent, 3-layer memory, reflection
-│   ├── market/              # Data feeds (Mock/Live), technical indicators
-│   ├── execution/           # Signal model, paper trader, aggregator, risk manager
-│   ├── integration/         # Redis pub/sub, Telegram notifications
-│   ├── utils/               # Config loader, logger
-│   └── main.py              # System entry point
-├── tests/                   # 126 tests covering all modules
+│   ├── personality/             # OCEAN model, constraint mapping, prompt generation (w/ hash)
+│   ├── agent/                   # Trading agent, multi-sample voting, 3-layer memory, reflection
+│   ├── market/                  # Data feeds (Mock/Live), technical indicators
+│   ├── execution/               # Signal, paper trader, aggregator, risk mgr, cost model, drift monitor
+│   ├── integration/             # Redis pub/sub, Telegram (signals + drift alerts + cost reports)
+│   ├── utils/                   # Config loader, logger, asset anonymizer, trade logger
+│   └── main.py                  # System entry point
+├── tests/                       # 148 tests covering all modules
 ├── scripts/
-│   ├── dashboard.py         # Rich terminal real-time dashboard
-│   ├── backtest.py          # Historical backtesting
+│   ├── dashboard.py             # Rich terminal real-time dashboard
+│   ├── backtest.py              # Rule-based historical backtesting
+│   ├── llm_backtest.py          # Real LLM backtesting with consistency metrics
 │   └── create_agents_config.py  # Bulk config generation
 └── pyproject.toml
 ```
 
 ---
 
+## System Hardening (Phase A-F)
+
+After the initial implementation, the system underwent a comprehensive hardening pass informed by academic research (TradeTrap, Profit Mirage, FINSABER, tau-bench, LiveTradeBench). The following enhancements were added:
+
+### A. Realistic Backtest Engine
+
+**Trading Cost Model** (`cost_model.py`): Every trade incurs real-world costs:
+
+| Cost Component | Default Value | Source |
+|----------------|--------------|--------|
+| Slippage | 5 bps (0.05%) | Market microstructure |
+| Taker fee | 0.04% | Binance perpetual futures |
+| Maker fee | 0.02% | Binance perpetual futures |
+| Funding rate | 0.015% / 8h | 2024 BTC-USDT average (~0.017%) |
+
+**Asset Anonymization** (`anonymizer.py`): Replaces `BTC-PERP` with `ASSET_A` in prompts to prevent LLM from recalling historical price data. Profit Mirage (2025) showed 51-62% Sharpe decay when removing name-based look-ahead bias.
+
+**LLM Backtest** (`llm_backtest.py`): Real LLM-driven backtest with multi-run consistency:
+```bash
+python scripts/llm_backtest.py --csv data/btc_1h_2024.csv --runs 3 --agents 3 --anonymize
+```
+Outputs per-agent: avg PnL, PnL std, action agreement rate, pass^k metric.
+
+### B. Agent Decision Stability
+
+**Multi-Sample Voting** (`multi_sample.py`): Each decision calls LLM 3 times (configurable), then majority-votes on the action. Based on Self-Consistency (Wang et al., ICLR 2023): 1→3 samples captures ~80% of consistency gains.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `decision_samples` | 3 | LLM calls per decision |
+| `consensus_threshold` | 0.6 | Minimum vote share to act (else HOLD) |
+
+**Behavior Drift Detection** (`consistency_monitor.py`): KL divergence between baseline and recent action distributions, with three-tier alerting:
+
+| Severity | KL Threshold | Action |
+|----------|-------------|--------|
+| Warning | > 0.1 | Log only |
+| Critical | > 0.2 | Telegram alert |
+| Halt | > 0.5 | Pause agent trading |
+
+**Prompt Versioning**: Every system prompt gets a SHA-256 hash appended (`[prompt_version: abc123...]`), stored in `TradeSignal.prompt_hash` for full traceability.
+
+### C. Memory System Upgrades
+
+**Relevance-Based Retrieval** (replaces pure FIFO): L2 episodic memory now scores historical trades by relevance — same asset (+3), same action (+2), has PnL data (+1) — instead of just "most recent N".
+
+**Exponential Decay**: L3 semantic memory applies decay weights (alpha=0.98 per position). Recent reflections display in full; older ones show first 50 characters.
+
+### D. Data Layer Fixes
+
+**Accurate 24h Price Change**: MockDataFeed now uses a 24-bar lookback for 24h change calculation (for 1h candles), instead of single-candle open→close which was severely inaccurate.
+
+**Extended MarketSnapshot**: Added `open_price` and `funding_rate` fields for cost model integration.
+
+### E. Per-Agent Risk Management
+
+Global risk manager now includes `check_agent_risk()`: monitors individual agent drawdown and consecutive losses, can halt a single agent without stopping the entire system.
+
+### F. Observability
+
+**Full-Chain Trade Logger** (`trade_logger.py`): Every trade records the complete decision chain — market snapshot, prompt hash, LLM raw response (first 500 chars), pre/post clip signal comparison, clipped fields list, execution result, cost breakdown.
+
+**New Telegram Alerts**: Behavior drift alerts, cost reports alongside existing signal/daily report notifications.
+
+---
+
 ## Three-Layer Memory System (FinMem-inspired)
 
-| Layer | Name | Content | Capacity | Storage | Trigger |
-|-------|------|---------|----------|---------|---------|
-| L1 | Working | Recent 20 ticks + last 5 trade results | 20+5 | In-memory | Every decision |
-| L2 | Episodic | Full trade records (price, PnL, reasoning) | 50 trades | Redis | Every trade |
-| L3 | Semantic | Reflection summaries (natural language) | 20 entries | Redis | Every 10 trades |
+| Layer | Name | Content | Capacity | Storage | Retrieval |
+|-------|------|---------|----------|---------|-----------|
+| L1 | Working | Recent 20 ticks + last 5 trade results | 20+5 | In-memory | Full (every decision) |
+| L2 | Episodic | Full trade records (price, PnL, reasoning) | 50 trades | Redis | Relevance-scored |
+| L3 | Semantic | Reflection summaries (natural language) | 20 entries | Redis | Decay-weighted |
 
 ---
 
@@ -160,7 +230,7 @@ cp .env.example .env
 
 ```bash
 pytest tests/ -v
-# 126 tests should pass
+# 148 tests should pass
 ```
 
 ### 4. Start the System
@@ -169,16 +239,39 @@ pytest tests/ -v
 python -m src.main
 ```
 
-### 5. Run Dashboard (separate terminal)
+### 5. Run LLM Backtest (with anonymization)
+
+```bash
+python scripts/llm_backtest.py --csv data/btc_1h_2024.csv --runs 3 --anonymize
+```
+
+### 6. Run Dashboard (separate terminal)
 
 ```bash
 python scripts/dashboard.py
 ```
 
-### 6. Run Backtest
+---
 
-```bash
-python scripts/backtest.py
+## Configuration
+
+### Trading Costs (`config/trading.yaml`)
+```yaml
+costs:
+  slippage_bps: 5
+  taker_fee_rate: 0.0004
+  maker_fee_rate: 0.0002
+  funding_rate_8h: 0.00015    # 2024 BTC-USDT avg ~0.017%
+  enable_costs: true           # false for A/B comparison
+anonymize: false               # true for backtest (recommended)
+```
+
+### Multi-Sample Voting (`config/llm.yaml`)
+```yaml
+decision_samples: 3            # LLM calls per decision
+consensus_threshold: 0.6       # vote share to act
+max_calls_per_minute: 20       # global rate limit
+max_cost_per_backtest_usd: 50  # hard cost cap for backtests
 ```
 
 ---
@@ -190,13 +283,6 @@ python scripts/backtest.py
 | `independent` | Each agent's signal executes independently | A/B testing personalities |
 | `voting` | Weighted vote: `confidence x historical_sharpe` | Ensemble decisions |
 
-Configure in `config/trading.yaml`:
-```yaml
-aggregator:
-  mode: "independent"  # or "voting"
-  signal_window_seconds: 120
-```
-
 ---
 
 ## Tech Stack
@@ -207,10 +293,10 @@ aggregator:
 | LLM Interface | `litellm` | Provider-agnostic (Claude/GPT/local) |
 | Data Validation | Pydantic v2 | Type safety + serialization |
 | Message Bus | Redis pub/sub | Signal broadcasting |
-| Notifications | aiogram 3.x | Telegram alerts |
+| Notifications | aiogram 3.x | Telegram alerts + drift warnings |
 | Logging | loguru | Structured, colored output |
 | Dashboard | rich | Terminal UI |
-| Testing | pytest + pytest-asyncio | 126 tests, full coverage |
+| Testing | pytest + pytest-asyncio | 148 tests, full coverage |
 
 **Intentionally excluded**: pandas, numpy, django, flask, sqlalchemy (keeping it lightweight).
 
@@ -223,6 +309,8 @@ The system pushes:
 - Stop-loss / take-profit triggers
 - Agent reflection reports (every 10 trades)
 - Daily leaderboard reports
+- **Behavior drift alerts** (KL divergence thresholds)
+- **Cost reports** (per-agent accumulated trading costs)
 
 Example signal notification:
 ```
@@ -238,23 +326,44 @@ Example signal notification:
 
 ## Development Roadmap
 
-### Phase 1 (Current): Paper Trading Validation
+### Phase 1 (Complete): Paper Trading Validation
 - [x] OCEAN personality model + 7 archetypes
 - [x] Deterministic constraint mapping
 - [x] LLM-driven decision loop with hard constraint enforcement
-- [x] 3-layer memory system
+- [x] 3-layer memory system (relevance retrieval + decay)
 - [x] Paper trading with full PnL tracking
 - [x] Signal aggregation (independent + voting)
-- [x] Global risk management
-- [x] Telegram notifications
+- [x] Global + per-agent risk management
+- [x] Telegram notifications + drift alerts
 - [x] Rich terminal dashboard
-- [x] Historical backtesting
+- [x] Historical backtesting (rule-based + LLM-driven)
+
+### Phase 1.5 (Complete): System Hardening
+- [x] Trading cost model (slippage + fees + funding)
+- [x] Multi-sample voting (3x LLM, 60% consensus)
+- [x] Asset anonymization (anti look-ahead bias)
+- [x] Behavior drift detection (3-tier KL thresholds)
+- [x] Prompt version tracking (SHA-256)
+- [x] Full-chain trade logging
+- [x] Relevance-based memory retrieval
+- [x] Exponential memory decay
 
 ### Phase 2 (Future): Live Trading
 - [ ] Connect to real DEX (GRVT/Paradex)
 - [ ] Dynamic personality evolution (auto-tuning from reflections)
 - [ ] Sentiment data sources (Twitter/Telegram)
 - [ ] Voting mode live validation
+
+---
+
+## Academic References
+
+This system's hardening was informed by:
+- **Profit Mirage** (2025): LLM trading agents suffer 51-62% Sharpe decay from look-ahead bias
+- **Self-Consistency** (Wang et al., ICLR 2023): Multi-sample voting captures ~80% consistency at 3 samples
+- **TradeTrap** (2025): Backtest without costs inflates returns by 2-5x
+- **tau-bench** (2025): pass@1=61% but pass^8=25% — single-run results are unreliable
+- **FinMem** (2023): Three-layer memory with relevance scoring and decay
 
 ---
 

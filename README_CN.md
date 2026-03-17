@@ -5,7 +5,7 @@
 > 用心理学 Big Five (OCEAN) 人格模型驱动的多 Agent 加密货币纸上交易系统——每个 Agent 拥有独特性格，性格决定交易风格
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-126%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-148%20passed-brightgreen.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -35,7 +35,7 @@
                      ▼                       │
               ┌──────────────┐               │
               │  LLM 调用    │◄──────────────┘
-              │  (litellm)   │
+              │ （3次投票）   │
               └──────┬───────┘
                      ▼
               ┌──────────────┐
@@ -44,7 +44,7 @@
               └──────┬───────┘
                      ▼
               ┌──────────────┐
-              │  纸上交易     │  → PnL, Sharpe, 最大回撤
+              │  纸上交易     │  → PnL - 成本（滑点 + 手续费 + 资金费率）
               └──────────────┘
 ```
 
@@ -59,6 +59,9 @@
 | **确定性约束** | `trait_to_constraint.py` 使用固定公式，不受 LLM 影响 |
 | **Agent 完全隔离** | 每个 Agent 独立记忆、独立持仓、独立 PnL |
 | **金额精确计算** | 所有金额使用 `decimal.Decimal`，禁止 float 算钱 |
+| **真实成本模拟** | 每笔交易扣除滑点 + Taker 手续费 + 8h 资金费率 |
+| **多采样一致性** | 每次决策调用 3 次 LLM，多数投票决定方向 |
+| **防回溯偏差** | 资产匿名化阻止 LLM 回忆历史价格走势 |
 
 ---
 
@@ -120,34 +123,101 @@ min_confidence       = clip(C * 0.008, 0.2, 0.8)
 ```
 personality-trading-agents/
 ├── config/
-│   ├── agents.yaml          # Agent 人格配置（OCEAN 参数）
-│   ├── trading.yaml         # 交易参数（交易对、数据源、风控）
-│   └── llm.yaml             # LLM 配置（provider、model、温度）
+│   ├── agents.yaml              # Agent 人格配置（OCEAN 参数）
+│   ├── trading.yaml             # 交易参数 + 成本配置 + 风控 + 匿名化开关
+│   └── llm.yaml                 # LLM 配置 + 多采样 + 限流
 ├── src/
-│   ├── personality/         # 人格引擎：OCEAN 模型 + 约束映射 + Prompt 生成
-│   ├── agent/               # Agent 核心：基类 + 交易 Agent + 三层记忆 + 反思
-│   ├── market/              # 行情数据：Mock/Live 数据源 + 技术指标
-│   ├── execution/           # 执行层：信号结构 + 纸上交易 + 聚合器 + 风控
-│   ├── integration/         # 外部集成：Redis 消息总线 + Telegram 通知
-│   ├── utils/               # 工具：配置加载 + 日志
-│   └── main.py              # 主入口
-├── tests/                   # 126 个测试，覆盖全部核心模块
+│   ├── personality/             # 人格引擎：OCEAN 模型 + 约束映射 + Prompt 生成（含版本hash）
+│   ├── agent/                   # Agent 核心：交易 Agent + 多采样投票 + 三层记忆 + 反思
+│   ├── market/                  # 行情数据：Mock/Live 数据源 + 技术指标
+│   ├── execution/               # 执行层：信号 + 纸上交易 + 聚合 + 风控 + 成本模型 + 漂移检测
+│   ├── integration/             # 外部集成：Redis 消息总线 + Telegram（信号+漂移+成本告警）
+│   ├── utils/                   # 工具：配置 + 日志 + 资产匿名化 + 全链路日志
+│   └── main.py                  # 主入口
+├── tests/                       # 148 个测试，覆盖全部模块
 ├── scripts/
-│   ├── dashboard.py         # Rich 终端实时仪表盘
-│   ├── backtest.py          # 历史回测
+│   ├── dashboard.py             # Rich 终端实时仪表盘
+│   ├── backtest.py              # 规则回测
+│   ├── llm_backtest.py          # LLM 真实回测（多次运行 + 一致性报告）
 │   └── create_agents_config.py  # 批量生成 Agent 配置
 └── pyproject.toml
 ```
 
 ---
 
+## 系统加固（Phase A-F）
+
+基于学术论文的系统性审查（TradeTrap、Profit Mirage、FINSABER、tau-bench、LiveTradeBench）后进行的全面加固：
+
+### A. 真实回测引擎
+
+**交易成本模型**（`cost_model.py`）：每笔交易扣除真实世界成本：
+
+| 成本项 | 默认值 | 来源 |
+|--------|--------|------|
+| 滑点 | 5 bps (0.05%) | 市场微观结构 |
+| Taker 手续费 | 0.04% | Binance 永续合约 |
+| Maker 手续费 | 0.02% | Binance 永续合约 |
+| 资金费率 | 0.015% / 8h | 2024 BTC-USDT 实际均值（~0.017%） |
+
+**资产匿名化**（`anonymizer.py`）：Prompt 中将 `BTC-PERP` 替换为 `ASSET_A`，防止 LLM 回忆历史价格。Profit Mirage (2025) 实测去除名称偏差后 Sharpe 衰减 51-62%。
+
+**LLM 真实回测**（`llm_backtest.py`）：
+```bash
+python scripts/llm_backtest.py --csv data/btc_1h_2024.csv --runs 3 --agents 3 --anonymize
+```
+输出：各 Agent 的平均 PnL、PnL 标准差、action 一致率、pass^k 指标。
+
+### B. Agent 决策稳定性
+
+**多采样投票**（`multi_sample.py`）：每次决策调用 LLM 3 次，多数票决定方向。基于 Self-Consistency（Wang et al., ICLR 2023）：1→3 次采样捕获约 80% 一致性增益。
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `decision_samples` | 3 | 每次决策的 LLM 调用次数 |
+| `consensus_threshold` | 0.6 | 多数票占比阈值，低于此值默认 HOLD |
+
+**行为漂移检测**（`consistency_monitor.py`）：用 KL 散度监控 action 分布变化，三级告警：
+
+| 严重程度 | KL 阈值 | 动作 |
+|---------|---------|------|
+| 警告 | > 0.1 | 记录日志 |
+| 严重 | > 0.2 | Telegram 告警 |
+| 暂停 | > 0.5 | 暂停该 Agent 交易 |
+
+**Prompt 版本追溯**：每个 System Prompt 末尾附加 SHA-256 hash（`[prompt_version: abc123...]`），存入 `TradeSignal.prompt_hash`，支持完整回溯。
+
+### C. 记忆系统升级
+
+**相关性检索**（替代纯 FIFO）：L2 情节记忆按相关性评分检索——同资产(+3)、同 action(+2)、有盈亏数据(+1)——而非只取"最近 N 条"。
+
+**指数衰减**：L3 语义记忆应用衰减权重（alpha=0.98）。近期反思完整展示，远期反思只显示前 50 字符。
+
+### D. 数据层修复
+
+**精确 24h 变化**：MockDataFeed 使用 24 条前价格计算 24h 变化（1h K 线 × 24），替代原来单根 K 线 open→close 的严重失真。
+
+**MarketSnapshot 扩展**：新增 `open_price` 和 `funding_rate` 字段。
+
+### E. Agent 级风控
+
+全局风控新增 `check_agent_risk()`：监控单个 Agent 的回撤和连续亏损，可暂停单个 Agent 而不影响全局。
+
+### F. 可观测性
+
+**全链路交易日志**（`trade_logger.py`）：每笔交易记录完整决策链——行情快照、Prompt hash、LLM 原始响应（前 500 字符）、校验前后信号对比、被 clip 字段列表、执行结果、成本明细。
+
+**新增 Telegram 告警**：行为漂移告警、成本报告。
+
+---
+
 ## 三层记忆系统（FinMem 启发）
 
-| 层级 | 名称 | 内容 | 容量 | 存储 | 触发时机 |
+| 层级 | 名称 | 内容 | 容量 | 存储 | 检索方式 |
 |------|------|------|------|------|---------|
-| L1 | 工作记忆 | 最近 20 条 tick + 最近 5 次交易结果 | 20+5 | 内存 | 每次决策 |
-| L2 | 情节记忆 | 完整交易记录（价格、盈亏、reasoning） | 50 笔 | Redis | 每次交易 |
-| L3 | 语义记忆 | 反思总结（自然语言） | 20 条 | Redis | 每 10 笔交易 |
+| L1 | 工作记忆 | 最近 20 条 tick + 最近 5 次交易结果 | 20+5 | 内存 | 全量（每次决策） |
+| L2 | 情节记忆 | 完整交易记录（价格、盈亏、reasoning） | 50 笔 | Redis | 相关性评分检索 |
+| L3 | 语义记忆 | 反思总结（自然语言） | 20 条 | Redis | 指数衰减加权 |
 
 **记忆隔离**：每个 Agent 的记忆完全独立，互不共享，确保性格差异不被稀释。
 
@@ -176,7 +246,7 @@ cp .env.example .env
 
 ```bash
 pytest tests/ -v
-# 应该看到 126 passed
+# 应该看到 148 passed
 ```
 
 ### 4. 启动系统
@@ -185,16 +255,39 @@ pytest tests/ -v
 python -m src.main
 ```
 
-### 5. 启动仪表盘（另开一个终端）
+### 5. 运行 LLM 回测（推荐开启匿名化）
+
+```bash
+python scripts/llm_backtest.py --csv data/btc_1h_2024.csv --runs 3 --anonymize
+```
+
+### 6. 启动仪表盘（另开一个终端）
 
 ```bash
 python scripts/dashboard.py
 ```
 
-### 6. 运行回测
+---
 
-```bash
-python scripts/backtest.py
+## 配置说明
+
+### 交易成本（`config/trading.yaml`）
+```yaml
+costs:
+  slippage_bps: 5              # 滑点 5 bps = 0.05%
+  taker_fee_rate: 0.0004       # Taker 手续费 0.04%
+  maker_fee_rate: 0.0002       # Maker 手续费 0.02%
+  funding_rate_8h: 0.00015     # 资金费率 0.015%/8h
+  enable_costs: true           # false 可关闭（对比实验用）
+anonymize: false               # 回测建议开启 true
+```
+
+### 多采样投票（`config/llm.yaml`）
+```yaml
+decision_samples: 3            # 每次决策 LLM 调用次数
+consensus_threshold: 0.6       # 投票占比阈值
+max_calls_per_minute: 20       # 全局限流
+max_cost_per_backtest_usd: 50  # 回测成本硬上限
 ```
 
 ---
@@ -206,13 +299,6 @@ python scripts/backtest.py
 | `independent` | 每个 Agent 信号独立执行，各自计算 PnL | 对比实验：哪种性格表现最好 |
 | `voting` | 按 `信心度 x 历史Sharpe` 加权投票 | 集成决策：综合多个性格的智慧 |
 
-在 `config/trading.yaml` 中配置：
-```yaml
-aggregator:
-  mode: "independent"  # 或 "voting"
-  signal_window_seconds: 120
-```
-
 ---
 
 ## 技术栈
@@ -223,39 +309,12 @@ aggregator:
 | LLM 接口 | `litellm` | 统一接口，支持 Claude/GPT/本地模型 |
 | 数据校验 | Pydantic v2 | 类型安全 + 序列化 |
 | 消息队列 | Redis pub/sub | Agent 信号广播 |
-| 通知推送 | aiogram 3.x | Telegram 实时告警 |
+| 通知推送 | aiogram 3.x | Telegram 实时告警 + 漂移告警 |
 | 日志 | loguru | 结构化彩色输出 |
 | 仪表盘 | rich | 终端实时 UI |
-| 测试 | pytest + pytest-asyncio | 126 个测试，全模块覆盖 |
+| 测试 | pytest + pytest-asyncio | 148 个测试，全模块覆盖 |
 
 **刻意不用的依赖**：pandas、numpy、django、flask、sqlalchemy——保持轻量。
-
----
-
-## Telegram 通知
-
-系统推送以下事件：
-- 交易信号（含完整决策理由）
-- 止损/止盈触发
-- Agent 反思报告（每 10 笔交易）
-- 每日排行榜汇总
-
-通知示例：
-```
-🧠 冷静创新型 (O90/C80/E25/A20/N10)
-📊 BUY BTC-PERP @ $67,200
-💰 Size: 25% | SL: $64,000 | TP: $72,000
-🎯 Confidence: 0.85
-💭 链上数据显示鲸鱼积累，RSI 超卖
-🔑 主导维度: O—愿意在回调中建仓新头寸
-
-📈 Daily Report - 2026-03-17
-| # | Agent      | PnL    | Sharpe | MaxDD  | Trades |
-|---|-----------|--------|--------|--------|--------|
-| 1 | 冷静创新型 | +$320  | 1.85   | -3.2%  | 5      |
-| 2 | 逆向价值型 | +$180  | 1.42   | -2.1%  | 3      |
-| 3 | 激进冒险型 | -$450  | -0.32  | -12.5% | 12     |
-```
 
 ---
 
@@ -267,42 +326,102 @@ aggregator:
 循环:
   1. 等待 rebalance_interval 秒（由 N 维度决定）
   2. 获取最新行情 → MarketSnapshot
-  3. 从三层记忆提取决策上下文
-  4. 生成 Decision Prompt（行情 + 持仓 + 记忆 + 总资产）
-  5. 调用 LLM → 获取 JSON 格式的决策建议
-  6. 校验 & Clip（关键步骤）：
+  3. 从三层记忆提取决策上下文（相关性检索 + 衰减加权）
+  4. [如果启用匿名化] 将 BTC-PERP → ASSET_A
+  5. 生成 Decision Prompt（行情 + 持仓 + 记忆 + 总资产）
+  6. 调用 LLM × 3 次 → 多数投票（60% 阈值）
+  7. [如果启用匿名化] 将 ASSET_A → BTC-PERP
+  8. 校验 & Clip（关键步骤）：
      - action 必须是 BUY/SELL/HOLD
      - asset 必须在允许列表中（否则拒绝）
      - size_pct 裁剪到 [0, max_position_pct]
      - confidence 裁剪到 [0, 1]
      - 如果 require_stop_loss=True 但未设止损 → 拒绝
-  7. 如果 confidence >= min_confidence_threshold：
+     - 记录 prompt_hash + llm_model 到信号中
+  9. 如果 confidence >= min_confidence_threshold：
+     - 扣除交易成本（滑点 + 手续费）
      - 发布信号到 Redis
+     - 记录全链路日志
      - 更新 L1 + L2 记忆
-  8. 每 10 笔交易 → 触发反思 → 更新 L3 记忆
+     - 检查行为漂移
+ 10. 每 10 笔交易 → 触发反思 → 更新 L3 记忆
+```
+
+---
+
+## Telegram 通知
+
+系统推送以下事件：
+- 交易信号（含完整决策理由）
+- 止损/止盈触发
+- Agent 反思报告（每 10 笔交易）
+- 每日排行榜汇总
+- **行为漂移告警**（KL 散度超阈值时）
+- **成本报告**（每个 Agent 累计交易成本）
+
+通知示例：
+```
+🧠 冷静创新型 (O90/C80/E25/A20/N10)
+📊 BUY BTC-PERP @ $67,200
+💰 Size: 25% | SL: $64,000 | TP: $72,000
+🎯 Confidence: 0.85
+💭 链上数据显示鲸鱼积累，RSI 超卖
+🔑 主导维度: O—愿意在回调中建仓新头寸
+
+⚠️ 行为漂移告警 [CRITICAL]
+Agent: 激进冒险型
+Action KL=0.312 > critical(0.2)
+
+📈 Daily Report - 2026-03-17
+| # | Agent      | PnL    | Sharpe | MaxDD  | Trades | 成本  |
+|---|-----------|--------|--------|--------|--------|-------|
+| 1 | 冷静创新型 | +$320  | 1.85   | -3.2%  | 5      | $12.3 |
+| 2 | 逆向价值型 | +$180  | 1.42   | -2.1%  | 3      | $7.8  |
+| 3 | 激进冒险型 | -$450  | -0.32  | -12.5% | 12     | $28.5 |
 ```
 
 ---
 
 ## 开发路线图
 
-### Phase 1（当前）：纸上交易验证
+### Phase 1（完成）：纸上交易验证
 - [x] OCEAN 人格模型 + 7 个原型
 - [x] 确定性约束映射
 - [x] LLM 驱动决策 + 硬约束强制执行
-- [x] 三层记忆系统
+- [x] 三层记忆系统（相关性检索 + 衰减）
 - [x] 纸上交易 + 完整绩效跟踪
 - [x] 信号聚合（独立 + 投票模式）
-- [x] 全局风控
-- [x] Telegram 通知
+- [x] 全局 + Agent 级风控
+- [x] Telegram 通知 + 漂移告警
 - [x] Rich 终端仪表盘
-- [x] 历史回测
+- [x] 历史回测（规则 + LLM 驱动）
+
+### Phase 1.5（完成）：系统加固
+- [x] 交易成本模型（滑点 + 手续费 + 资金费率）
+- [x] 多采样投票（3 次 LLM，60% 共识阈值）
+- [x] 资产匿名化（防回溯偏差）
+- [x] 行为漂移检测（三级 KL 阈值）
+- [x] Prompt 版本追溯（SHA-256）
+- [x] 全链路交易日志
+- [x] 相关性记忆检索
+- [x] 指数记忆衰减
 
 ### Phase 2（未来）：实盘交易
 - [ ] 接入真实 DEX（GRVT/Paradex）
 - [ ] 人格动态进化（反思驱动自动调参）
 - [ ] 情绪数据源（Twitter/Telegram sentiment）
 - [ ] 投票模式实盘验证
+
+---
+
+## 学术参考
+
+本系统加固受以下论文启发：
+- **Profit Mirage** (2025)：LLM 交易 Agent 因回溯偏差 Sharpe 衰减 51-62%
+- **Self-Consistency** (Wang et al., ICLR 2023)：多采样投票在 3 次采样时捕获约 80% 一致性增益
+- **TradeTrap** (2025)：不计成本的回测收益虚高 2-5 倍
+- **tau-bench** (2025)：pass@1=61% 但 pass^8=25%——单次运行结果不可靠
+- **FinMem** (2023)：三层记忆 + 相关性评分 + 衰减机制
 
 ---
 
