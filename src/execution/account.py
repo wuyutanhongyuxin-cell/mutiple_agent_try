@@ -13,6 +13,7 @@ from typing import Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from src.execution.cost_model import CostConfig, calculate_entry_cost, calculate_exit_cost
 from src.execution.signal import TradeSignal
 
 
@@ -33,16 +34,19 @@ class Position(BaseModel):
 class AgentAccount:
     """单个 Agent 的虚拟交易账户。"""
 
-    def __init__(self, agent_id: str, initial_capital: Decimal) -> None:
+    def __init__(self, agent_id: str, initial_capital: Decimal,
+                 cost_config: CostConfig | None = None) -> None:
         self.agent_id: str = agent_id
         self.initial_capital: Decimal = initial_capital
-        self.cash: Decimal = initial_capital  # 可用资金
-        self.positions: list[Position] = []  # 当前持仓
-        self.closed_trades: list[dict] = []  # 已平仓交易记录
-        self.daily_returns: list[float] = []  # 日收益率序列
-        self.peak_value: Decimal = initial_capital  # 历史最高净值
-        self.max_dd_ratio: float = 0.0  # 跟踪最大回撤比率（负值或0）
-        self._last_portfolio_value: Decimal = initial_capital  # 上次记录净值
+        self.cash: Decimal = initial_capital
+        self.positions: list[Position] = []
+        self.closed_trades: list[dict] = []
+        self.daily_returns: list[float] = []
+        self.peak_value: Decimal = initial_capital
+        self.max_dd_ratio: float = 0.0
+        self._last_portfolio_value: Decimal = initial_capital
+        self._cost_config: CostConfig = cost_config or CostConfig()
+        self.total_costs: Decimal = Decimal("0")  # 累计交易成本
 
     def execute_buy(self, signal: TradeSignal, current_prices: dict[str, float]) -> bool:
         """执行买入信号，开多仓。
@@ -56,23 +60,30 @@ class AgentAccount:
         """
         portfolio_value = self.get_portfolio_value(current_prices)
         notional = portfolio_value * Decimal(str(signal.size_pct)) / Decimal("100")
-        if notional > self.cash:
-            logger.warning(f"[{self.agent_id}] 资金不足: 需要 {notional}, 可用 {self.cash}")
+        # A1: 计算开仓成本
+        cost_result = calculate_entry_cost(
+            signal.entry_price, float(notional), "LONG", self._cost_config,
+        )
+        total_needed = notional + Decimal(str(cost_result.total_cost))
+        if total_needed > self.cash:
+            logger.warning(f"[{self.agent_id}] 资金不足: 需要 {total_needed}, 可用 {self.cash}")
             return False
-        self.cash -= notional
+        self.cash -= total_needed
+        self.total_costs += Decimal(str(cost_result.total_cost))
         pos = Position(
             agent_id=self.agent_id,
             asset=signal.asset,
             side="LONG",
             size_pct=signal.size_pct,
-            entry_price=Decimal(str(signal.entry_price)),
+            entry_price=Decimal(str(cost_result.effective_price)),
             stop_loss_price=_to_decimal(signal.stop_loss_price),
             take_profit_price=_to_decimal(signal.take_profit_price),
             opened_at=signal.timestamp,
             notional=notional,
         )
         self.positions.append(pos)
-        logger.info(f"[{self.agent_id}] 开多 {signal.asset} | 金额={notional} | 入场={signal.entry_price}")
+        logger.info(f"[{self.agent_id}] 开多 {signal.asset} | 金额={notional} | "
+                     f"入场={cost_result.effective_price} | 成本={cost_result.total_cost:.4f}")
         return True
 
     def execute_sell(self, signal: TradeSignal, current_prices: dict[str, float]) -> bool:
@@ -140,12 +151,19 @@ class AgentAccount:
         return None
 
     def _close_position(self, pos: Position, close_price: Decimal, reason: str) -> dict:
-        """平仓并记录交易。"""
+        """平仓并记录交易（含平仓成本）。"""
+        # A1: 计算平仓成本
+        exit_cost = calculate_exit_cost(
+            float(close_price), float(pos.notional), pos.side, self._cost_config,
+        )
+        cost_dec = Decimal(str(exit_cost.total_cost))
+        effective_close = Decimal(str(exit_cost.effective_price))
         if pos.entry_price > Decimal("0"):
-            pnl = pos.notional * (close_price - pos.entry_price) / pos.entry_price
+            pnl = pos.notional * (effective_close - pos.entry_price) / pos.entry_price - cost_dec
         else:
             pnl = Decimal("0")
         self.cash += pos.notional + pnl
+        self.total_costs += cost_dec
         self.positions.remove(pos)
         trade_record = {
             "agent_id": self.agent_id,

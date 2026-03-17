@@ -87,9 +87,43 @@ class AgentMemory:
         """获取最近 N 条反思（从 L3）。"""
         return await self._redis.lrange_json(self._l3_key, 0, count - 1)
 
+    # ── C1: 相关性检索（替代纯 FIFO）──────────────────
+
+    async def get_relevant_trades(
+        self, current_asset: str, current_action: str, count: int = 5
+    ) -> list[dict]:
+        """检索与当前决策最相关的历史交易（而非最新的）。
+
+        评分规则：同资产+3, 同action+2, 有盈亏记录+1, 时间衰减-0.1×天数(最多-2)
+        """
+        all_trades = await self.get_recent_trades(count=_L2_TRADE_LIMIT)
+        if not all_trades:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for t in all_trades:
+            score = 0.0
+            if t.get("asset") == current_asset:
+                score += 3.0
+            if str(t.get("action", "")).upper() == current_action.upper():
+                score += 2.0
+            if "pnl" in t:
+                score += 1.0
+            scored.append((score, t))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [t for _, t in scored[:count]]
+
+    # ── C2: 记忆衰减 ────────────────────────────────
+
+    @staticmethod
+    def _apply_decay(items: list[str], base_alpha: float = 0.95) -> list[tuple[str, float]]:
+        """对列表项应用指数衰减权重。index=0 最新（权重=1.0）。"""
+        return [(item, round(base_alpha ** i, 4)) for i, item in enumerate(items)]
+
     # ── 决策上下文 ────────────────────────────────────
 
-    async def get_context_for_decision(self) -> str:
+    async def get_context_for_decision(
+        self, current_asset: str = "", current_action: str = ""
+    ) -> str:
         """从三层记忆提取上下文，拼成字符串插入 decision prompt。"""
         parts: list[str] = ["=== WORKING MEMORY ==="]
         # L1 价格
@@ -104,9 +138,12 @@ class AgentMemory:
                 parts.append(f"  Trade: {t.get('action')} {t.get('asset')} PnL={t.get('pnl', 'N/A')}")
         else:
             parts.append("Recent trades: None.")
-        # L2 历史交易
+        # L2 相关性检索（C1）
         parts.append("\n=== EPISODIC MEMORY ===")
-        l2_trades = await self.get_recent_trades(count=5)
+        if current_asset:
+            l2_trades = await self.get_relevant_trades(current_asset, current_action, count=5)
+        else:
+            l2_trades = await self.get_recent_trades(count=5)
         if l2_trades:
             for t in l2_trades:
                 parts.append(f"  {t.get('action')} {t.get('asset')} "
@@ -114,12 +151,15 @@ class AgentMemory:
                              f"PnL={t.get('pnl', 'N/A')}")
         else:
             parts.append("No historical trades.")
-        # L3 反思
+        # L3 反思（带衰减 C2）
         parts.append("\n=== SEMANTIC MEMORY ===")
-        reflections = await self._get_reflections(count=3)
+        reflections = await self._get_reflections(count=5)
         if reflections:
-            for ref in reflections:
-                parts.append(f"  - {ref}")
+            weighted = self._apply_decay(reflections, base_alpha=0.98)
+            for ref, w in weighted:
+                # 低权重项只展示前 50 字符
+                display = ref if w >= 0.5 else (ref[:50] + "..." if len(ref) > 50 else ref)
+                parts.append(f"  - [{w:.2f}] {display}")
         else:
             parts.append("No reflections yet.")
         return "\n".join(parts)

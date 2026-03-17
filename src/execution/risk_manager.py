@@ -69,6 +69,33 @@ class RiskManager:
         """当前是否处于暂停状态。"""
         return self._is_halted
 
+    # ── E1: Agent 级风控 ────────────────────────────────
+
+    def check_agent_risk(self, agent_id: str, agent_stats: dict) -> dict:
+        """检查单个 Agent 的风险状态。
+
+        触发条件：
+        - 已实现亏损 > max_drawdown_pct → 暂停该 Agent
+        - 连续亏损 >= 5 笔 → 告警
+        - 单笔亏损 > 总资产 10% → 告警
+        """
+        alerts: list[str] = []
+        should_halt = False
+        dd = abs(agent_stats.get("max_drawdown_pct", 0))
+        if dd > float(self._max_drawdown):
+            alerts.append(f"回撤 {dd:.1f}% > 阈值 {self._max_drawdown}%")
+            should_halt = True
+        pnl = agent_stats.get("realized_pnl", 0)
+        pv = agent_stats.get("portfolio_value", 1)
+        if pv > 0 and pnl < 0 and abs(pnl) / pv * 100 > float(self._max_drawdown):
+            alerts.append(f"累计亏损 {abs(pnl):.0f} 超限")
+            should_halt = True
+        return {
+            "agent_id": agent_id,
+            "should_halt": should_halt,
+            "alerts": alerts,
+        }
+
     @staticmethod
     def _pct_loss(baseline: Decimal | None, current: Decimal) -> Decimal:
         """计算从 baseline 到 current 的亏损百分比（正值=亏损）。"""

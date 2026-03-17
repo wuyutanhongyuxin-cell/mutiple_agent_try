@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 """Prompt 生成器：将 OCEAN 人格参数和交易约束转化为 LLM Prompt。
 
 Prompt 全部用英文（LLM 英文推理更准），日志和通知用中文。
+末尾附带 SHA256 前 12 位 hash 用于版本追溯。
 """
+
+import hashlib
 
 from src.personality.ocean_model import OceanProfile
 from src.personality.trait_to_constraint import TradingConstraints
@@ -84,7 +89,20 @@ def generate_system_prompt(profile: OceanProfile, constraints: TradingConstraint
         "- Do NOT wrap the JSON in markdown code fences.\n"
         "You MUST respond with ONLY a valid JSON object."
     )
-    return "\n\n".join([role, personality, hard, output_fmt, rules])
+    prompt = "\n\n".join([role, personality, hard, output_fmt, rules])
+    # 附带 prompt 内容 hash 用于版本追溯
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:12]
+    prompt += f"\n\n[prompt_version: {prompt_hash}]"
+    return prompt
+
+
+def get_prompt_hash(prompt: str) -> str:
+    """从 system prompt 末尾提取 hash，或对整体计算 hash。"""
+    marker = "[prompt_version: "
+    idx = prompt.rfind(marker)
+    if idx >= 0:
+        return prompt[idx + len(marker):idx + len(marker) + 12]
+    return hashlib.sha256(prompt.encode()).hexdigest()[:12]
 
 
 def generate_decision_prompt(

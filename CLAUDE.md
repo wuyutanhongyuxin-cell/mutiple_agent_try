@@ -54,8 +54,9 @@ personality-trading-agents/
 │   │   ├── README.md
 │   │   ├── __init__.py
 │   │   ├── base_agent.py              # Agent基类：生命周期（~60行）
-│   │   ├── trading_agent.py           # 交易Agent：决策循环（~150行）
-│   │   ├── memory.py                  # 三层记忆系统（~120行）
+│   │   ├── trading_agent.py           # 交易Agent：多采样+匿名化（~200行）
+│   │   ├── multi_sample.py            # 多采样投票决策（NEW ~45行）
+│   │   ├── memory.py                  # 三层记忆+相关性检索+衰减（~160行）
 │   │   └── reflection.py             # 交易反思模块（~80行）
 │   ├── market/                        # 行情数据
 │   │   ├── README.md
@@ -65,10 +66,12 @@ personality-trading-agents/
 │   ├── execution/                     # 执行层
 │   │   ├── README.md
 │   │   ├── __init__.py
-│   │   ├── signal.py                  # TradeSignal数据结构（~50行）
+│   │   ├── signal.py                  # TradeSignal+prompt_hash（~50行）
+│   │   ├── cost_model.py              # 交易成本：滑点+手续费+funding（NEW ~90行）
+│   │   ├── consistency_monitor.py     # 行为漂移检测：三级KL阈值（NEW ~120行）
 │   │   ├── aggregator.py              # 多Agent信号聚合（~100行）
-│   │   ├── risk_manager.py            # 全局风控（~80行）
-│   │   └── paper_trader.py            # 纸上交易执行器（~150行）
+│   │   ├── risk_manager.py            # 全局+Agent级风控（~100行）
+│   │   └── paper_trader.py            # 纸上交易执行器+成本（~120行）
 │   ├── integration/                   # 外部集成
 │   │   ├── README.md
 │   │   ├── __init__.py
@@ -77,7 +80,9 @@ personality-trading-agents/
 │   └── utils/                         # 工具
 │       ├── __init__.py
 │       ├── logger.py                  # loguru配置（~30行）
-│       └── config_loader.py           # YAML加载器（~40行）
+│       ├── config_loader.py           # YAML加载器（~40行）
+│       ├── anonymizer.py             # 资产匿名化防look-ahead bias（NEW ~60行）
+│       └── trade_logger.py           # 全链路交易日志（NEW ~60行）
 ├── tests/
 │   ├── test_personality/
 │   │   ├── test_ocean_model.py
@@ -86,10 +91,15 @@ personality-trading-agents/
 │   ├── test_agent/
 │   │   ├── test_trading_agent.py
 │   │   └── test_memory.py
-│   └── test_execution/
-│       ├── test_aggregator.py
-│       └── test_paper_trader.py
-└── scripts/
+│   ├── test_execution/
+│   │   ├── test_aggregator.py
+│   │   ├── test_paper_trader.py
+│   │   ├── test_cost_model.py         # NEW
+│   │   └── test_consistency_monitor.py # NEW
+│   └── test_utils/
+│       └── test_anonymizer.py          # NEW
+├── scripts/
+│   ├── llm_backtest.py                # LLM真实回测+一致性报告（NEW）
     ├── backtest.py                    # 历史回测
     ├── create_agents_config.py        # 批量生成Agent配置
     └── dashboard.py                   # Rich终端仪表盘
@@ -440,6 +450,11 @@ LOG_LEVEL=INFO
    - 高O Agent交易币种范围 > 低O Agent
    - 高E Agent追涨比例 > 低E Agent
 6. 3个Agent × 60秒间隔 → 每小时LLM调用 ≤ 36次
+7. `scripts/llm_backtest.py --runs 3 --agents 3` 能完成并输出一致性报告
+8. 不同 OCEAN Agent 的 action agreement rate 应有差异（高 C > 低 C）
+9. 开启交易成本后，总 PnL 低于关闭成本时的 PnL（验证成本模型生效）
+10. 匿名化开关切换前后 LLM 不会拒绝响应
+11. 行为漂移检测能在人工注入异常后触发告警
 
 ---
 
@@ -451,6 +466,10 @@ LOG_LEVEL=INFO
 4. **禁止**自动修改OCEAN参数 — Phase 1人格固定
 5. **禁止**连接真实交易所 — Phase 1只有paper trading
 6. **禁止**用pandas/numpy — 纯Python + Pydantic
+7. **禁止**回测不计算交易成本 — 必须包含滑点和手续费
+8. **禁止**LLM回测用规则替代LLM — `llm_backtest.py` 必须调真实 LLM
+9. **禁止**一致性度量只跑1次 — 至少3次运行才有统计意义
+10. **禁止**修改 `trait_to_constraint.py` 映射公式 — 核心竞争力
 
 ---
 

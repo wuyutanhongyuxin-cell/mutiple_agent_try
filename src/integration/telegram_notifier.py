@@ -118,6 +118,30 @@ class TelegramNotifier:
             return
         await self.send_message(f"*风控告警* 系统暂停交易\n原因: {reason}")
 
+    async def notify_drift_alert(self, agent_name: str, drift_info: dict) -> None:
+        """推送行为漂移告警。"""
+        if not self._enabled:
+            return
+        severity = drift_info.get("severity", "unknown")
+        reasons = "\n".join(drift_info.get("alert_reasons", []))
+        await self.send_message(
+            f"*行为漂移告警* [{severity.upper()}]\n"
+            f"Agent: {agent_name}\n{reasons}"
+        )
+
+    async def notify_cost_report(
+        self, agent_id: str, total_cost: float, breakdown: dict
+    ) -> None:
+        """推送成本报告。"""
+        if not self._enabled:
+            return
+        await self.send_message(
+            f"*成本报告* {agent_id}\n"
+            f"总成本: ${total_cost:,.2f}\n"
+            f"滑点: ${breakdown.get('slippage', 0):,.2f} | "
+            f"手续费: ${breakdown.get('fees', 0):,.2f}"
+        )
+
     async def close(self) -> None:
         """关闭 Bot session。"""
         if self._bot is not None:

@@ -42,3 +42,5 @@ class TradeSignal(BaseModel):
     reasoning: str = Field(..., description="决策理由（英文，LLM 原始输出）")
     personality_influence: str = Field(..., description="主导的 OCEAN 维度说明")
     ocean_profile: dict = Field(..., description="完整 OCEAN 五维分数快照")
+    prompt_hash: str = Field(default="", description="生成此信号时使用的 prompt 版本 hash")
+    llm_model: str = Field(default="", description="LLM 模型版本标识")

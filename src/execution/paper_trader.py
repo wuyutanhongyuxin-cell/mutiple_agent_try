@@ -11,6 +11,7 @@ from decimal import Decimal
 from loguru import logger
 
 from src.execution.account import AgentAccount
+from src.execution.cost_model import CostConfig
 from src.execution.signal import Action, TradeSignal
 from src.execution.stats_helper import (
     calc_max_drawdown_pct,
@@ -23,9 +24,10 @@ from src.execution.stats_helper import (
 class PaperTrader:
     """纸上交易管理器，管理所有 Agent 账户。"""
 
-    def __init__(self) -> None:
+    def __init__(self, cost_config: CostConfig | None = None) -> None:
         self._accounts: dict[str, AgentAccount] = {}
-        self._current_prices: dict[str, float] = {}  # 最新行情缓存
+        self._current_prices: dict[str, float] = {}
+        self._cost_config: CostConfig = cost_config or CostConfig()
 
     def register_agent(self, agent_id: str, initial_capital: float) -> None:
         """注册一个 Agent 虚拟账户。
@@ -35,7 +37,7 @@ class PaperTrader:
             initial_capital: 初始资金（float，内部转 Decimal）
         """
         cap = Decimal(str(initial_capital))
-        self._accounts[agent_id] = AgentAccount(agent_id, cap)
+        self._accounts[agent_id] = AgentAccount(agent_id, cap, self._cost_config)
         logger.info(f"注册 Agent 账户: {agent_id} | 初始资金={cap}")
 
     def execute_signal(self, signal: TradeSignal) -> bool:
@@ -96,6 +98,7 @@ class PaperTrader:
             "profit_factor": calc_profit_factor(acc.closed_trades),
             "total_trades": len(acc.closed_trades),
             "open_positions": len(acc.positions),
+            "total_costs": float(acc.total_costs),
         }
 
     def get_leaderboard(self) -> list[dict]:

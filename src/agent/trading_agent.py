@@ -12,13 +12,17 @@ from loguru import logger
 
 from src.agent.base_agent import BaseAgent
 from src.agent.memory import AgentMemory
+from src.agent.multi_sample import vote_on_actions
 from src.agent.reflection import generate_reflection
 from src.execution.signal import Action, TradeSignal
 from src.integration.redis_bus import RedisBus
 from src.market.data_feed import DataFeed, MarketSnapshot
 from src.personality.ocean_model import OceanProfile
-from src.personality.prompt_generator import generate_decision_prompt, generate_system_prompt
+from src.personality.prompt_generator import (
+    generate_decision_prompt, generate_system_prompt, get_prompt_hash,
+)
 from src.personality.trait_to_constraint import TradingConstraints
+from src.utils.anonymizer import AssetAnonymizer
 
 SIGNAL_CHANNEL: str = "agent_signals"
 
@@ -53,9 +57,12 @@ class TradingAgent(BaseAgent):
         self._redis_bus: RedisBus = redis_bus
         self._memory: AgentMemory = AgentMemory(agent_id, redis_bus)
         self._system_prompt: str = generate_system_prompt(profile, constraints)
+        self._prompt_hash: str = get_prompt_hash(self._system_prompt)
         self._positions: list[dict] = []
         self._portfolio_value: Decimal = Decimal("10000")
         self._trade_count: int = 0
+        # 匿名化器（可选，由 main.py 注入）
+        self._anonymizer: AssetAnonymizer | None = None
 
     # ── 主循环 ──────────────────────────────────────────
 
@@ -75,23 +82,59 @@ class TradingAgent(BaseAgent):
     # ── 单次决策 ────────────────────────────────────────
 
     async def _decision_cycle(self) -> None:
-        """一次完整决策：行情->Prompt->LLM->校验->发布。"""
+        """一次完整决策：行情→匿名化→Prompt→LLM(多采样)→反匿名→校验→发布。"""
         asset: str = self._constraints.allowed_assets[0]
         snapshot: MarketSnapshot | None = await self._market_feed.get_latest(asset)
         if snapshot is None:
             logger.warning(f"[{self._name}] 行情获取失败，跳过本轮")
             return
-        context: str = await self._memory.get_context_for_decision()
-        prompt: str = generate_decision_prompt(
-            _snapshot_to_dict(snapshot), self._positions,
-            context, float(self._portfolio_value),
+        # C1: 传入当前 asset 用于相关性检索
+        context: str = await self._memory.get_context_for_decision(
+            current_asset=asset, current_action="",
         )
-        raw: str | None = await self._call_llm(prompt)
-        if raw is None:
-            return
-        signal: TradeSignal | None = self._validate_signal(raw, snapshot)
+        market_dict = _snapshot_to_dict(snapshot)
+        # A3: 匿名化（如果启用）
+        if self._anonymizer:
+            market_dict = self._anonymizer.anonymize_market_data(market_dict)
+            context = self._anonymizer.anonymize(context)
+        prompt: str = generate_decision_prompt(
+            market_dict, self._positions, context, float(self._portfolio_value),
+        )
+        # B2: 多采样投票
+        n_samples: int = self._llm_config.get("decision_samples", 3)
+        threshold: float = self._llm_config.get("consensus_threshold", 0.6)
+        if n_samples <= 1:
+            raw = await self._call_llm(prompt)
+            if raw is None:
+                return
+            signal = self._validate_signal(raw, snapshot)
+        else:
+            signal = await self._multi_sample_decision(prompt, snapshot, n_samples, threshold)
         if signal is not None:
             await self._execute_signal(signal)
+
+    async def _multi_sample_decision(
+        self, prompt: str, snapshot: MarketSnapshot,
+        n_samples: int, threshold: float,
+    ) -> TradeSignal | None:
+        """多次调用 LLM，投票决定最终信号。"""
+        parsed: list[dict] = []
+        for i in range(n_samples):
+            raw = await self._call_llm(prompt)
+            if raw is None:
+                continue
+            # A3: 反匿名化 LLM 响应中的资产名
+            if self._anonymizer:
+                raw = self._anonymizer.deanonymize(raw)
+            data = self._parse_llm_response(raw)
+            if data is not None:
+                parsed.append(data)
+        winner = vote_on_actions(parsed, consensus_threshold=threshold)
+        if winner is None:
+            logger.info(f"[{self._name}] 多采样无共识，默认 HOLD")
+            return None
+        # 用胜出的 data 构建信号
+        return self._build_signal_from_data(winner, snapshot)
 
     # ── LLM 调用（含重试） ─────────────────────────────
 
@@ -137,24 +180,27 @@ class TradingAgent(BaseAgent):
         data: dict | None = self._parse_llm_response(raw)
         if data is None:
             return None
-        # action 校验
+        # A3: 反匿名化
+        if self._anonymizer:
+            asset_raw = str(data.get("asset", ""))
+            data["asset"] = self._anonymizer.deanonymize_asset(asset_raw)
+        return self._build_signal_from_data(data, snapshot)
+
+    def _build_signal_from_data(self, data: dict, snapshot: MarketSnapshot) -> TradeSignal | None:
+        """从解析后的 dict 构建 TradeSignal，执行所有约束校验。"""
         action_str: str = str(data.get("action", "")).upper()
         if action_str not in ("BUY", "SELL", "HOLD"):
             logger.warning(f"[{self._name}] 无效 action: {action_str}")
             return None
-        # asset 必须在允许列表中
         asset: str = str(data.get("asset", ""))
         if asset not in self._constraints.allowed_assets:
             logger.warning(f"[{self._name}] 资产 {asset} 不在允许列表中")
             return None
-        # size_pct 和 confidence clip 到合法范围
-        size_pct: float = _clip(float(data.get("size_pct", 0)), 0, self._constraints.max_position_pct)
-        confidence: float = _clip(float(data.get("confidence", 0)), 0.0, 1.0)
-        # 信心阈值检查
+        size_pct = _clip(float(data.get("size_pct", 0)), 0, self._constraints.max_position_pct)
+        confidence = _clip(float(data.get("confidence", 0)), 0.0, 1.0)
         if confidence < self._constraints.min_confidence_threshold:
             logger.info(f"[{self._name}] 信心不足 {confidence:.2f}，跳过")
             return None
-        # 止损检查（尽责性高时强制要求）
         stop_loss: float | None = data.get("stop_loss_price")
         if self._constraints.require_stop_loss and stop_loss is None:
             logger.warning(f"[{self._name}] 缺少止损价格，约束要求必须设置")
@@ -170,6 +216,8 @@ class TradingAgent(BaseAgent):
             reasoning=str(data.get("reasoning", "")),
             personality_influence=str(data.get("personality_influence", "")),
             ocean_profile=self._profile.model_dump(exclude={"name"}),
+            prompt_hash=self._prompt_hash,
+            llm_model=self._llm_config.get("model", ""),
         )
 
     # ── 信号执行（发布 + 记忆更新） ────────────────────

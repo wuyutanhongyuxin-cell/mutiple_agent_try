@@ -1,54 +1,46 @@
 # todo.md — Personality Trading Agents 进度跟踪
 
-## Phase 1：纸上交易验证
+## Phase 1：纸上交易验证 ✅
 
-### Step 1：基础设施 ✅
-- [x] `pyproject.toml`
-- [x] `utils/config_loader.py`
-- [x] `utils/logger.py`
-- [x] `config/agents.yaml`
-- [x] `config/trading.yaml`
-- [x] `config/llm.yaml`
-- [x] `.env.example`
+### Step 1-7：核心实现 ✅ (126 tests)
+全部完成，详见 git 历史。
 
-### Step 2：人格引擎 ✅
-- [x] `personality/ocean_model.py` — 7个预定义原型
-- [x] `personality/trait_to_constraint.py` — 映射公式
-- [x] `personality/prompt_generator.py` — System + Decision Prompt
-- [x] `tests/test_personality/` — 全部通过 ✅
+### Phase A：回测引擎重建 ✅
+- [x] `execution/cost_model.py` — 滑点+手续费+资金费率模型
+- [x] 成本模型集成到 `account.py` / `paper_trader.py`
+- [x] `scripts/llm_backtest.py` — 真实 LLM 回测（多runs+pass^k）
+- [x] `utils/anonymizer.py` — 资产匿名化防 look-ahead bias
+- [x] `config/trading.yaml` 新增 costs + anonymize 配置
 
-### Step 3：数据层 ✅
-- [x] `market/data_feed.py` — Mock + Live
-- [x] `market/indicators.py` — RSI/SMA/MACD
-- [x] `execution/signal.py` — TradeSignal
-- [x] `integration/redis_bus.py`
+### Phase B：Agent 稳定性增强 ✅
+- [x] `execution/consistency_monitor.py` — 行为漂移检测（三级KL阈值）
+- [x] `agent/multi_sample.py` — 多采样投票机制（默认3次）
+- [x] `agent/trading_agent.py` 集成多采样+匿名化+prompt hash
+- [x] `personality/prompt_generator.py` — Prompt 版本控制(SHA256)
+- [x] `execution/signal.py` 新增 prompt_hash + llm_model 字段
 
-### Step 4：Agent核心 ✅
-- [x] `agent/memory.py` — 三层记忆
-- [x] `agent/base_agent.py`
-- [x] `agent/trading_agent.py` — 决策循环
-- [x] `tests/test_agent/` — 全部通过 ✅
+### Phase C：记忆系统升级 ✅
+- [x] `agent/memory.py` — 相关性检索（替代纯FIFO）
+- [x] `agent/memory.py` — 指数衰减机制（L3 alpha=0.98）
 
-### Step 5：执行层 ✅
-- [x] `execution/paper_trader.py`
-- [x] `execution/aggregator.py`
-- [x] `execution/risk_manager.py`
-- [x] `tests/test_execution/` — 全部通过 ✅
+### Phase D：数据层增强 ✅
+- [x] `market/data_feed.py` — 修复24h变化（用24条前价格）
+- [x] `market/data_feed.py` — MarketSnapshot 新增 open_price + funding_rate
+- [x] `config/trading.yaml` 成本配置段
+- [x] `config/llm.yaml` 多采样+限流配置
 
-### Step 6：集成层 ✅
-- [x] `integration/telegram_notifier.py`
-- [x] `agent/reflection.py`
-- [x] `src/main.py` — 主入口
+### Phase E：全局风控增强 ✅
+- [x] `execution/risk_manager.py` — 新增 Agent 级风控
 
-### Step 7：工具 ✅
-- [x] `scripts/dashboard.py`
-- [x] `scripts/create_agents_config.py`
-- [x] `scripts/backtest.py`
+### Phase F：可观测性增强 ✅
+- [x] `utils/trade_logger.py` — 全链路交易日志
+- [x] `integration/telegram_notifier.py` — 漂移告警+成本报告
 
-### 验收 ✅
-- [x] pytest 126 tests 全通过
-- [x] 代码已推送 GitHub
-- [x] 精美教学 README 完成
+### 测试 ✅
+- [x] 148 tests 全部通过（原126 + 新增22）
+- [x] test_cost_model.py (8 tests)
+- [x] test_consistency_monitor.py (7 tests)
+- [x] test_anonymizer.py (7 tests)
 
 ---
 

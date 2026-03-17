@@ -9,3 +9,7 @@ llm:
   retry_delay_seconds: 5
   max_calls_per_agent_per_hour: 12
   fallback_model: "gpt-4o-mini"
+  decision_samples: 3            # 每次决策 LLM 调用次数（1=单次，3=投票）
+  consensus_threshold: 0.6       # 多数票占比阈值，低于此值默认 HOLD
+  max_calls_per_minute: 20       # 全局限流（防止回测打爆 API）
+  max_cost_per_backtest_usd: 50.0  # 单次回测成本硬上限

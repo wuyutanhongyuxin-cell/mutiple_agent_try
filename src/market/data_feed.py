@@ -30,6 +30,8 @@ class MarketSnapshot(BaseModel):
     volume_24h: float = Field(..., description="24小时成交量")
     high_24h: float = Field(..., description="24小时最高价")
     low_24h: float = Field(..., description="24小时最低价")
+    open_price: float = Field(default=0.0, description="开盘价（回测需要）")
+    funding_rate: float = Field(default=0.0, description="当前资金费率（永续合约）")
 
 
 class DataFeed(ABC):
@@ -44,15 +46,20 @@ class DataFeed(ABC):
 
 # --------------- 辅助函数 ---------------
 
-def _parse_csv_row(row: dict[str, str], asset: str) -> MarketSnapshot:
-    """将 CSV 行解析为 MarketSnapshot。"""
+def _parse_csv_row(
+    row: dict[str, str], asset: str, change_24h_override: float | None = None
+) -> MarketSnapshot:
+    """将 CSV 行解析为 MarketSnapshot。change_24h_override 可由外部传入精确 24h 变化。"""
     close, open_p = float(row["close"]), float(row["open"])
-    change = ((close - open_p) / open_p * 100) if open_p else 0.0
+    change = change_24h_override if change_24h_override is not None else (
+        ((close - open_p) / open_p * 100) if open_p else 0.0
+    )
     return MarketSnapshot(
         timestamp=datetime.fromisoformat(row["timestamp"]), asset=asset,
         price=close, price_24h_change_pct=round(change, 4),
         volume_24h=float(row["volume"]),
         high_24h=float(row["high"]), low_24h=float(row["low"]),
+        open_price=open_p,
     )
 
 
@@ -66,6 +73,7 @@ def _generate_fake_snapshot(asset: str, base_price: float) -> MarketSnapshot:
         volume_24h=round(random.uniform(1000, 100000), 2),
         high_24h=round(price * random.uniform(1.0, 1.03), 2),
         low_24h=round(price * random.uniform(0.97, 1.0), 2),
+        open_price=round(base_price, 2),
     )
 
 
@@ -98,15 +106,24 @@ class MockDataFeed(DataFeed):
         self._asset = asset
         self._index = 0
         self._replay_speed = replay_speed
+        self._price_history: list[float] = []  # 维护价格历史用于精确 24h 变化
         logger.info(f"MockDataFeed 初始化: {len(self._rows)} 条历史数据, 资产={asset}")
 
     async def get_latest(self, asset: str) -> MarketSnapshot | None:
-        """返回当前位置的行情数据。无 CSV 时返回随机数据。"""
+        """返回当前位置的行情数据。用 24 条前价格计算真实 24h 变化。"""
         if not self._rows:
             return _generate_fake_snapshot(asset, _DEFAULT_PRICES.get(asset, 1000.0))
         if self._index >= len(self._rows):
-            self._index = 0  # 循环播放
-        snapshot = _parse_csv_row(self._rows[self._index], asset)
+            self._index = 0
+        row = self._rows[self._index]
+        close = float(row["close"])
+        self._price_history.append(close)
+        # 用 24 条前的价格计算 24h 变化（1h K 线 × 24 = 24h）
+        change_24h: float | None = None
+        if len(self._price_history) > 24:
+            price_24h_ago = self._price_history[-25]
+            change_24h = (close - price_24h_ago) / price_24h_ago * 100
+        snapshot = _parse_csv_row(row, asset, change_24h_override=change_24h)
         self._index += 1
         return snapshot
 
@@ -159,6 +176,7 @@ class LiveDataFeed(DataFeed):
                 price_24h_change_pct=float(data["priceChangePercent"]),
                 volume_24h=float(data["volume"]),
                 high_24h=float(data["highPrice"]), low_24h=float(data["lowPrice"]),
+                open_price=float(data.get("openPrice", 0)),
             )
         except Exception as e:
             logger.error(f"拉取行情失败 [{asset}]: {e}")
