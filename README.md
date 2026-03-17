@@ -5,7 +5,7 @@
 > A Multi-Agent Crypto Paper Trading System driven by Big Five (OCEAN) Personality Model
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-174%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-193%20passed-brightgreen.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -113,22 +113,24 @@ min_confidence       = clip(C * 0.008, 0.2, 0.8)
 personality-trading-agents/
 ├── config/
 │   ├── agents.yaml              # Agent personality configs (OCEAN params)
-│   ├── trading.yaml             # Trading params, costs, risk, anonymization
-│   └── llm.yaml                 # LLM config + multi-sample + rate limiting
+│   ├── trading.yaml             # Trading params, costs, risk, anonymization, debate toggle
+│   ├── llm.yaml                 # LLM config + multi-sample + rate limiting
+│   └── market_knowledge.json    # Market causal relationship knowledge graph
 ├── src/
 │   ├── personality/             # OCEAN model, constraint mapping, prompt generation (w/ hash)
 │   ├── agent/                   # Trading agent, multi-sample voting, 3-layer memory, reflection
 │   ├── market/                  # Data feeds (Mock/Live), technical indicators, adversarial scenarios
-│   ├── execution/               # Signal, paper trader, aggregator, risk mgr, cost model, drift monitor
+│   ├── execution/               # Signal, paper trader, aggregator, risk mgr, cost model, drift monitor, debate, strategy
 │   ├── integration/             # Redis pub/sub, Telegram (signals + drift alerts + cost reports)
-│   ├── utils/                   # Config loader, logger, asset anonymizer, trade logger, TF-IDF engine
+│   ├── utils/                   # Config loader, logger, asset anonymizer, trade logger, TF-IDF, knowledge graph
 │   └── main.py                  # System entry point
-├── tests/                       # 174 tests covering all modules
+├── tests/                       # 193 tests covering all modules
 ├── scripts/
 │   ├── dashboard.py             # Rich terminal real-time dashboard
 │   ├── backtest.py              # Rule-based historical backtesting
 │   ├── llm_backtest.py          # Real LLM backtesting with consistency metrics + multi-market
 │   ├── generate_synthetic_data.py # Generate synthetic bear/sideways/bull CSV data
+│   ├── export_training_data.py  # Export decision traces as JSONL for LLM fine-tuning
 │   └── create_agents_config.py  # Bulk config generation
 └── pyproject.toml
 ```
@@ -232,6 +234,54 @@ python scripts/llm_backtest.py --csv data/btc_bull.csv --runs 3 --multi-market -
 
 ---
 
+## P2: Market Knowledge Graph & Fine-tuning Data Export
+
+**Lightweight Knowledge Graph** (`market_knowledge.json`): A pure-JSON causal relationship map covering BTC/ETH market factors — no Neo4j or external graph DB required.
+
+| Factor | Effect on BTC | Strength | Lag |
+|--------|--------------|----------|-----|
+| FED_RATE | Negative | Strong | ~30d |
+| M2_SUPPLY | Positive | Strong | ~90d |
+| DXY | Negative | Moderate | ~7d |
+| VIX | Negative | Moderate | 0d |
+| BTC_ETF_FLOW | Positive | Strong | ~1d |
+| EXCHANGE_RESERVE | Negative (declining=bullish) | Moderate | ~3d |
+| FUNDING_RATE | Contrarian | Weak | 0d |
+| OPEN_INTEREST | Amplify volatility | Moderate | 0d |
+
+Knowledge context is injected into every Decision Prompt before the memory section, providing agents with macro-level awareness.
+
+**Fine-tuning Data Export** (`export_training_data.py`): Export successful trade decisions as JSONL training data for LLM fine-tuning (LoRA/QLoRA). Uses post-clip signals (validated behavior) as training targets.
+
+```bash
+python scripts/export_training_data.py --agent agent_calm_innovator --output data/finetune/
+```
+
+---
+
+## P3: Bull/Bear Debate & Execution Strategy Abstraction
+
+**Bull/Bear Debate** (`debate.py`): Inspired by TradingAgents (arxiv 2412.20138), when voting mode has `enable_debate: true`, all agents' reasoning is collected and sent to a neutral judge LLM:
+
+1. Arguments grouped: Bull (BUY) / Bear (SELL) / Neutral (HOLD)
+2. Judge outputs: `dominant_view`, `confidence_adjustment` (±0.3), `key_argument`, `risk_flag`
+3. BUY signals boosted if BULL dominant, SELL signals boosted if BEAR dominant
+4. Only adjusts confidence weights — never changes trade direction
+
+**Important**: This does NOT share agent memories. It only uses the public `reasoning` field from each signal.
+
+**Execution Strategy Abstraction** (`strategy.py`): Decouples signal validation logic from the agent core:
+
+```
+ExecutionStrategy (ABC)
+  └── RuleBasedStrategy    ← current default (OCEAN constraint clip logic)
+  └── RLStrategy           ← future (Phase 2, LLM + RL hybrid)
+```
+
+The `_build_signal_from_data()` method now delegates to `strategy.process_signal()`, making it possible to swap in an RL-based execution strategy without modifying agent code.
+
+---
+
 ## Three-Layer Memory System (FinMem-inspired)
 
 | Layer | Name | Content | Capacity | Storage | Retrieval |
@@ -262,7 +312,7 @@ cp .env.example .env
 
 ```bash
 pytest tests/ -v
-# 174 tests should pass
+# 193 tests should pass
 ```
 
 ### 4. Start the System
@@ -296,6 +346,8 @@ costs:
   funding_rate_8h: 0.00015    # 2024 BTC-USDT avg ~0.017%
   enable_costs: true           # false for A/B comparison
 anonymize: false               # true for backtest (recommended)
+aggregator:
+  enable_debate: false         # true enables Bull/Bear debate (voting mode only)
 ```
 
 ### Multi-Sample Voting (`config/llm.yaml`)
@@ -314,6 +366,9 @@ max_cost_per_backtest_usd: 50  # hard cost cap for backtests
 |------|-------------|----------|
 | `independent` | Each agent's signal executes independently | A/B testing personalities |
 | `voting` | Weighted vote: `confidence x historical_sharpe` | Ensemble decisions |
+| `voting` + debate | Bull/Bear debate adjusts confidence before voting | Balanced ensemble |
+
+**Bull/Bear Debate** (`debate.py`): When `enable_debate: true`, a neutral judge LLM evaluates all agents' reasoning, grouped into Bull (BUY) / Bear (SELL) / Neutral (HOLD) arguments. The judge returns a `confidence_adjustment` (±0.3 max) that adjusts signal weights without changing trade direction. Inspired by TradingAgents (arxiv 2412.20138).
 
 ---
 
@@ -328,7 +383,7 @@ max_cost_per_backtest_usd: 50  # hard cost cap for backtests
 | Notifications | aiogram 3.x | Telegram alerts + drift warnings |
 | Logging | loguru | Structured, colored output |
 | Dashboard | rich | Terminal UI |
-| Testing | pytest + pytest-asyncio | 174 tests, full coverage |
+| Testing | pytest + pytest-asyncio | 193 tests, full coverage |
 
 **Intentionally excluded**: pandas, numpy, django, flask, sqlalchemy (keeping it lightweight).
 
@@ -393,11 +448,23 @@ Example signal notification:
 - [x] Pure Python TF-IDF engine (no sklearn/numpy) for semantic memory retrieval
 - [x] Hybrid retrieval: TF-IDF similarity (50%) + rule scoring (50%) + time decay
 
+### P2 (Complete): Knowledge Graph & Fine-tuning Data Export
+- [x] Lightweight market knowledge graph (`market_knowledge.json`) — BTC/ETH causal relations (macro, on-chain, derivatives)
+- [x] Knowledge context injected into Decision Prompt (before memory section)
+- [x] Decision trace export script (`export_training_data.py`) — JSONL format for OpenAI/Qwen fine-tuning
+
+### P3 (Complete): Bull/Bear Debate & Execution Strategy Abstraction
+- [x] Bull/Bear debate module (`debate.py`) — judge LLM evaluates agent reasoning, adjusts confidence weights
+- [x] `enable_debate` toggle in `config/trading.yaml` (default: off)
+- [x] ExecutionStrategy interface + RuleBasedStrategy (`strategy.py`) — decouples validation logic from agent core
+- [x] Future RL strategies can replace RuleBasedStrategy without modifying agent code
+
 ### Phase 2 (Future): Live Trading
 - [ ] Connect to real DEX (GRVT/Paradex)
 - [ ] Dynamic personality evolution (auto-tuning from reflections)
 - [ ] Sentiment data sources (Twitter/Telegram)
 - [ ] Voting mode live validation
+- [ ] RL strategy replacing RuleBasedStrategy
 
 ---
 
@@ -409,6 +476,9 @@ This system's hardening was informed by:
 - **TradeTrap** (2025): Backtest without costs inflates returns by 2-5x
 - **tau-bench** (2025): pass@1=61% but pass^8=25% — single-run results are unreliable
 - **FinMem** (2023): Three-layer memory with relevance scoring and decay
+- **TradingAgents** (2024, arxiv 2412.20138): Bull/Bear researcher debate mechanism
+- **TradingGroup** (2025, arxiv 2508.17565): Decision trace collection for LLM fine-tuning
+- **Fidelity Digital Assets** (2024): BTC-M2 correlation r=0.78 with ~90d lag
 
 ---
 

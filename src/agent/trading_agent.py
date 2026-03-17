@@ -15,6 +15,7 @@ from src.agent.memory import AgentMemory
 from src.agent.multi_sample import vote_on_actions
 from src.agent.reflection import generate_meta_reflection, generate_reflection
 from src.execution.signal import Action, TradeSignal
+from src.execution.strategy import RuleBasedStrategy
 from src.integration.redis_bus import RedisBus
 from src.market.data_feed import DataFeed, MarketSnapshot
 from src.personality.ocean_model import OceanProfile
@@ -25,11 +26,6 @@ from src.personality.trait_to_constraint import TradingConstraints
 from src.utils.anonymizer import AssetAnonymizer
 
 SIGNAL_CHANNEL: str = "agent_signals"
-
-
-def _clip(value: float, min_val: float, max_val: float) -> float:
-    """将 value 限制在 [min_val, max_val] 范围内。"""
-    return max(min_val, min(value, max_val))
 
 
 def _snapshot_to_dict(snapshot: MarketSnapshot) -> dict:
@@ -63,6 +59,13 @@ class TradingAgent(BaseAgent):
         self._trade_count: int = 0
         # 匿名化器（可选，由 main.py 注入）
         self._anonymizer: AssetAnonymizer | None = None
+        # 执行策略（默认规则策略，未来可替换为 RL 策略）
+        self._strategy: RuleBasedStrategy = RuleBasedStrategy(
+            agent_id=agent_id, agent_name=profile.name,
+            profile_dump=profile.model_dump(exclude={"name"}),
+            prompt_hash=self._prompt_hash,
+            llm_model=llm_config.get("model", ""),
+        )
 
     # ── 主循环 ──────────────────────────────────────────
 
@@ -187,37 +190,9 @@ class TradingAgent(BaseAgent):
         return self._build_signal_from_data(data, snapshot)
 
     def _build_signal_from_data(self, data: dict, snapshot: MarketSnapshot) -> TradeSignal | None:
-        """从解析后的 dict 构建 TradeSignal，执行所有约束校验。"""
-        action_str: str = str(data.get("action", "")).upper()
-        if action_str not in ("BUY", "SELL", "HOLD"):
-            logger.warning(f"[{self._name}] 无效 action: {action_str}")
-            return None
-        asset: str = str(data.get("asset", ""))
-        if asset not in self._constraints.allowed_assets:
-            logger.warning(f"[{self._name}] 资产 {asset} 不在允许列表中")
-            return None
-        size_pct = _clip(float(data.get("size_pct", 0)), 0, self._constraints.max_position_pct)
-        confidence = _clip(float(data.get("confidence", 0)), 0.0, 1.0)
-        if confidence < self._constraints.min_confidence_threshold:
-            logger.info(f"[{self._name}] 信心不足 {confidence:.2f}，跳过")
-            return None
-        stop_loss: float | None = data.get("stop_loss_price")
-        if self._constraints.require_stop_loss and stop_loss is None:
-            logger.warning(f"[{self._name}] 缺少止损价格，约束要求必须设置")
-            return None
-        return TradeSignal(
-            agent_id=self._agent_id, agent_name=self._name,
-            timestamp=datetime.now(tz=timezone.utc),
-            action=Action(action_str), asset=asset, size_pct=size_pct,
-            entry_price=float(data.get("entry_price", snapshot.price)),
-            stop_loss_price=stop_loss,
-            take_profit_price=data.get("take_profit_price"),
-            confidence=confidence,
-            reasoning=str(data.get("reasoning", "")),
-            personality_influence=str(data.get("personality_influence", "")),
-            ocean_profile=self._profile.model_dump(exclude={"name"}),
-            prompt_hash=self._prompt_hash,
-            llm_model=self._llm_config.get("model", ""),
+        """委托给执行策略处理 LLM 原始输出。"""
+        return self._strategy.process_signal(
+            data, snapshot, self._constraints, float(self._portfolio_value),
         )
 
     # ── 信号执行（发布 + 记忆更新） ────────────────────

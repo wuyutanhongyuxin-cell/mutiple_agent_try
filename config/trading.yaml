@@ -13,6 +13,7 @@ trading:
   aggregator:
     mode: "independent"             # "independent" | "voting"
     signal_window_seconds: 120
+    enable_debate: false             # true 启用 Bull/Bear 辩论（仅 voting 模式有效）
 
   costs:
     slippage_bps: 5              # 滑点 basis points (5 = 0.05%)

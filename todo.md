@@ -81,8 +81,40 @@
 
 ---
 
+## P2：知识图谱 + 微调数据导出 ✅
+
+### P2-1：轻量知识图谱 ✅
+- [x] `config/market_knowledge.json` — BTC/ETH 因果关系图谱（宏观/链上/衍生品）
+- [x] `utils/knowledge_graph.py` — 图谱加载与查询（纯 JSON + 标准库）
+- [x] `personality/prompt_generator.py` — Decision Prompt 注入 Market Knowledge 段
+- [x] `tests/test_utils/test_knowledge_graph.py` — 6 个测试全部通过
+
+### P2-2：决策轨迹导出 ✅
+- [x] `scripts/export_training_data.py` — JSONL 微调数据导出（OpenAI/Qwen 格式）
+
+---
+
+## P3：辩论机制 + 执行策略抽象 ✅
+
+### P3-1：Bull/Bear 辩论机制 ✅
+- [x] `execution/debate.py` — 裁判 LLM 辩论模块（TradingAgents 启发）
+- [x] `execution/aggregator.py` — voting 模式新增 enable_debate 参数
+- [x] `config/trading.yaml` — 新增 enable_debate: false
+- [x] `tests/test_execution/test_debate.py` — 7 个测试全部通过
+
+### P3-2：执行策略抽象层 ✅
+- [x] `execution/strategy.py` — ExecutionStrategy 接口 + RuleBasedStrategy
+- [x] `agent/trading_agent.py` — _build_signal_from_data 委托给 Strategy（纯重构）
+- [x] `tests/test_execution/test_strategy.py` — 6 个测试全部通过
+
+### 测试 ✅
+- [x] 193 tests 全部通过（原174 + 新增19）
+
+---
+
 ## Phase 2（未来）
 - [ ] 接入真实DEX（GRVT/Paradex）
 - [ ] Agent人格动态进化（反思自动调参）
 - [ ] 情绪数据源接入（Twitter/Telegram sentiment）
 - [ ] 投票模式实盘验证
+- [ ] RL 策略替换 RuleBasedStrategy

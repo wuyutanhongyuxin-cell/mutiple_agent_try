@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from src.execution.debate import apply_debate_result, run_debate
 from src.execution.signal import Action, TradeSignal
 
 if TYPE_CHECKING:
@@ -22,14 +23,18 @@ class SignalAggregator:
 
     def __init__(self, mode: str, signal_window_seconds: int = 120,
                  paper_trader: PaperTrader | None = None,
-                 redis_bus: RedisBus | None = None) -> None:
+                 redis_bus: RedisBus | None = None,
+                 enable_debate: bool = False,
+                 llm_config: dict | None = None) -> None:
         self._mode = mode
         self._window = signal_window_seconds
         self._paper_trader = paper_trader
         self._redis_bus = redis_bus
+        self._enable_debate = enable_debate
+        self._llm_config = llm_config or {}
         self._pending_signals: list[TradeSignal] = []  # 投票模式缓存
         self._agent_sharpes: dict[str, float] = {}     # agent_id → 历史 Sharpe
-        logger.info("信号聚合器初始化 | 模式={}", mode)
+        logger.info("信号聚合器初始化 | 模式={} 辩论={}", mode, enable_debate)
 
     async def handle_signal(self, signal: TradeSignal) -> TradeSignal | None:
         """处理单个信号。独立模式直接执行，投票模式先缓存。"""
@@ -58,9 +63,9 @@ class SignalAggregator:
             return None  # 窗口未到期
         signals = self._pending_signals.copy()
         self._pending_signals.clear()
-        return self._aggregate_votes(signals)
+        return await self._aggregate_votes(signals)
 
-    def _aggregate_votes(self, signals: list[TradeSignal]) -> TradeSignal | None:
+    async def _aggregate_votes(self, signals: list[TradeSignal]) -> TradeSignal | None:
         """加权投票聚合：confidence × sharpe 决定方向，仓位取加权平均。"""
         if not signals:
             return None
@@ -68,7 +73,14 @@ class SignalAggregator:
         asset_groups: dict[str, list[TradeSignal]] = {}
         for s in signals:
             asset_groups.setdefault(s.asset, []).append(s)
-        group = asset_groups[max(asset_groups, key=lambda a: len(asset_groups[a]))]
+        target_asset = max(asset_groups, key=lambda a: len(asset_groups[a]))
+        group = asset_groups[target_asset]
+        # 辩论环节（仅 voting 模式且启用时）
+        if self._enable_debate and self._llm_config:
+            debate_result = await run_debate(group, target_asset, self._llm_config)
+            if debate_result:
+                group = apply_debate_result(group, debate_result)
+                logger.info("辩论完成 | 主导观点={}", debate_result.get("dominant_view"))
         # 计算各方向加权得分
         scores: dict[Action, float] = {a: 0.0 for a in Action}
         w_sizes: dict[Action, float] = {a: 0.0 for a in Action}

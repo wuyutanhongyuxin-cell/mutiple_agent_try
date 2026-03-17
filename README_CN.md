@@ -5,7 +5,7 @@
 > 用心理学 Big Five (OCEAN) 人格模型驱动的多 Agent 加密货币纸上交易系统——每个 Agent 拥有独特性格，性格决定交易风格
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-174%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-193%20passed-brightgreen.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -124,22 +124,24 @@ min_confidence       = clip(C * 0.008, 0.2, 0.8)
 personality-trading-agents/
 ├── config/
 │   ├── agents.yaml              # Agent 人格配置（OCEAN 参数）
-│   ├── trading.yaml             # 交易参数 + 成本配置 + 风控 + 匿名化开关
-│   └── llm.yaml                 # LLM 配置 + 多采样 + 限流
+│   ├── trading.yaml             # 交易参数 + 成本配置 + 风控 + 匿名化 + 辩论开关
+│   ├── llm.yaml                 # LLM 配置 + 多采样 + 限流
+│   └── market_knowledge.json    # 市场因果关系知识图谱
 ├── src/
 │   ├── personality/             # 人格引擎：OCEAN 模型 + 约束映射 + Prompt 生成（含版本hash）
 │   ├── agent/                   # Agent 核心：交易 Agent + 多采样投票 + 三层记忆 + 反思
 │   ├── market/                  # 行情数据：Mock/Live 数据源 + 技术指标 + 对抗性场景
-│   ├── execution/               # 执行层：信号 + 纸上交易 + 聚合 + 风控 + 成本模型 + 漂移检测
+│   ├── execution/               # 执行层：信号 + 纸上交易 + 聚合 + 风控 + 成本 + 漂移 + 辩论 + 策略
 │   ├── integration/             # 外部集成：Redis 消息总线 + Telegram（信号+漂移+成本告警）
-│   ├── utils/                   # 工具：配置 + 日志 + 资产匿名化 + 全链路日志 + TF-IDF 引擎
+│   ├── utils/                   # 工具：配置 + 日志 + 匿名化 + 全链路日志 + TF-IDF + 知识图谱
 │   └── main.py                  # 主入口
-├── tests/                       # 174 个测试，覆盖全部模块
+├── tests/                       # 193 个测试，覆盖全部模块
 ├── scripts/
 │   ├── dashboard.py             # Rich 终端实时仪表盘
 │   ├── backtest.py              # 规则回测
 │   ├── llm_backtest.py          # LLM 真实回测（多次运行 + 一致性 + 多市况）
 │   ├── generate_synthetic_data.py # 合成多市况数据（熊市/横盘/牛市）
+│   ├── export_training_data.py  # 决策轨迹导出（JSONL 微调格式）
 │   └── create_agents_config.py  # 批量生成 Agent 配置
 └── pyproject.toml
 ```
@@ -243,6 +245,56 @@ python scripts/llm_backtest.py --csv data/btc_bull.csv --runs 3 --multi-market -
 
 ---
 
+## P2：市场知识图谱 + 微调数据导出
+
+**轻量知识图谱**（`market_knowledge.json`）：纯 JSON 实现的市场因果关系图谱，覆盖宏观、链上、衍生品因子，不需要 Neo4j 或任何图数据库。
+
+| 因子 | 对 BTC 影响 | 强度 | 滞后 |
+|------|------------|------|------|
+| 美联储利率 | 负相关 | 强 | ~30天 |
+| 全球 M2 供应量 | 正相关 | 强 | ~90天 |
+| 美元指数 DXY | 负相关 | 中等 | ~7天 |
+| 恐慌指数 VIX | 负相关 | 中等 | 0天 |
+| BTC ETF 资金流 | 正相关 | 强 | ~1天 |
+| 交易所储备量 | 负相关（下降=看涨） | 中等 | ~3天 |
+| 资金费率 | 反向指标 | 弱 | 0天 |
+| 未平仓合约 | 放大波动 | 中等 | 0天 |
+
+来源：Fidelity Digital Assets 研报（BTC-M2 相关系数 r=0.78，~90天滞后）、S&P Global 研报、Frontiers in Blockchain 2025。
+
+知识上下文在每次 Decision Prompt 中注入（位于记忆段之前），为 Agent 提供宏观层面的市场认知。
+
+**微调数据导出**（`export_training_data.py`）：将成功交易决策导出为 JSONL 格式训练数据，用于 LLM 微调（LoRA/QLoRA）。使用校验后信号（validated behavior）作为训练目标。
+
+```bash
+python scripts/export_training_data.py --agent agent_calm_innovator --output data/finetune/
+```
+
+---
+
+## P3：Bull/Bear 辩论 + 执行策略抽象
+
+**Bull/Bear 辩论**（`debate.py`）：受 TradingAgents (arxiv 2412.20138) 启发，当 voting 模式开启 `enable_debate: true` 时：
+
+1. 收集所有 Agent 的 reasoning，分为 Bull(BUY) / Bear(SELL) / Neutral(HOLD) 三组
+2. 裁判 LLM 输出：`dominant_view`、`confidence_adjustment`(±0.3)、`key_argument`、`risk_flag`
+3. 如果 BULL 主导：BUY 信号信心提升，SELL 信号信心降低；反之亦然
+4. 只调整信心权重，不改变交易方向
+
+**重要**：辩论不共享 Agent 记忆，只使用信号中的公开 reasoning 字段。
+
+**执行策略抽象**（`strategy.py`）：将信号校验逻辑从 Agent 核心解耦：
+
+```
+ExecutionStrategy (抽象基类)
+  └── RuleBasedStrategy    ← 当前默认（OCEAN 约束 clip 逻辑）
+  └── RLStrategy           ← 未来 Phase 2（LLM + RL 混合架构）
+```
+
+`_build_signal_from_data()` 现在委托给 `strategy.process_signal()`，未来可直接替换为 RL 策略，无需修改 Agent 代码。
+
+---
+
 ## 三层记忆系统（FinMem 启发）
 
 | 层级 | 名称 | 内容 | 容量 | 存储 | 检索方式 |
@@ -278,7 +330,7 @@ cp .env.example .env
 
 ```bash
 pytest tests/ -v
-# 应该看到 174 passed
+# 应该看到 193 passed
 ```
 
 ### 4. 启动系统
@@ -312,6 +364,8 @@ costs:
   funding_rate_8h: 0.00015     # 资金费率 0.015%/8h
   enable_costs: true           # false 可关闭（对比实验用）
 anonymize: false               # 回测建议开启 true
+aggregator:
+  enable_debate: false         # true 启用 Bull/Bear 辩论（仅 voting 模式）
 ```
 
 ### 多采样投票（`config/llm.yaml`）
@@ -330,6 +384,11 @@ max_cost_per_backtest_usd: 50  # 回测成本硬上限
 |------|------|---------|
 | `independent` | 每个 Agent 信号独立执行，各自计算 PnL | 对比实验：哪种性格表现最好 |
 | `voting` | 按 `信心度 x 历史Sharpe` 加权投票 | 集成决策：综合多个性格的智慧 |
+| `voting` + 辩论 | Bull/Bear 辩论调整信心权重后再投票 | 平衡型集成决策 |
+
+**Bull/Bear 辩论**（`debate.py`）：启用 `enable_debate: true` 后，裁判 LLM 评估所有 Agent 的 reasoning，分为 Bull(BUY)/Bear(SELL)/Neutral(HOLD) 三组，输出 `confidence_adjustment`（±0.3）调整信号权重，但不改变交易方向。灵感来自 TradingAgents (arxiv 2412.20138)。
+
+**重要**：辩论不共享 Agent 记忆，只使用信号中的公开 `reasoning` 字段。
 
 ---
 
@@ -344,7 +403,7 @@ max_cost_per_backtest_usd: 50  # 回测成本硬上限
 | 通知推送 | aiogram 3.x | Telegram 实时告警 + 漂移告警 |
 | 日志 | loguru | 结构化彩色输出 |
 | 仪表盘 | rich | 终端实时 UI |
-| 测试 | pytest + pytest-asyncio | 174 个测试，全模块覆盖 |
+| 测试 | pytest + pytest-asyncio | 193 个测试，全模块覆盖 |
 
 **刻意不用的依赖**：pandas、numpy、django、flask、sqlalchemy——保持轻量。
 
@@ -452,11 +511,23 @@ Action KL=0.312 > critical(0.2)
 - [x] 纯 Python TF-IDF 引擎（无 sklearn/numpy）
 - [x] 混合检索：TF-IDF 语义相似度(50%) + 规则评分(50%) + 时间衰减
 
+### P2（完成）：知识图谱 + 微调数据导出
+- [x] 轻量市场知识图谱（`market_knowledge.json`）— BTC/ETH 因果关系（宏观/链上/衍生品）
+- [x] 知识上下文注入 Decision Prompt（位于记忆段之前）
+- [x] 决策轨迹导出脚本（`export_training_data.py`）— JSONL 格式，支持 OpenAI/Qwen 微调
+
+### P3（完成）：Bull/Bear 辩论 + 执行策略抽象
+- [x] Bull/Bear 辩论模块（`debate.py`）— 裁判 LLM 评估 reasoning，调整信心权重
+- [x] `enable_debate` 开关（`config/trading.yaml`，默认关闭）
+- [x] ExecutionStrategy 接口 + RuleBasedStrategy（`strategy.py`）— 校验逻辑从 Agent 解耦
+- [x] 未来 RL 策略可直接替换 RuleBasedStrategy，无需修改 Agent 代码
+
 ### Phase 2（未来）：实盘交易
 - [ ] 接入真实 DEX（GRVT/Paradex）
 - [ ] 人格动态进化（反思驱动自动调参）
 - [ ] 情绪数据源（Twitter/Telegram sentiment）
 - [ ] 投票模式实盘验证
+- [ ] RL 策略替换 RuleBasedStrategy
 
 ---
 
@@ -468,6 +539,9 @@ Action KL=0.312 > critical(0.2)
 - **TradeTrap** (2025)：不计成本的回测收益虚高 2-5 倍
 - **tau-bench** (2025)：pass@1=61% 但 pass^8=25%——单次运行结果不可靠
 - **FinMem** (2023)：三层记忆 + 相关性评分 + 衰减机制
+- **TradingAgents** (2024, arxiv 2412.20138)：Bull/Bear 研究员辩论机制
+- **TradingGroup** (2025, arxiv 2508.17565)：决策轨迹收集用于 LLM 微调
+- **Fidelity Digital Assets** (2024)：BTC-M2 相关系数 r=0.78，约 90 天滞后
 
 ---
 

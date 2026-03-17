@@ -10,6 +10,7 @@ import hashlib
 
 from src.personality.ocean_model import OceanProfile
 from src.personality.trait_to_constraint import TradingConstraints
+from src.utils.knowledge_graph import build_knowledge_context
 
 # ── 维度描述映射：(全名, 高分含义, 低分含义) ──
 _TRAIT_DESC: dict[str, tuple[str, str, str]] = {
@@ -143,6 +144,9 @@ def generate_decision_prompt(
         f"- Total Value: ${portfolio_value:,.2f}\n"
         f"- Available Balance: ${portfolio_value - used:,.2f}"
     )
+    # 知识图谱上下文（在记忆之前注入）
+    asset_name = market_data.get("asset", "UNKNOWN").replace("-PERP", "")
+    knowledge_sec = f"## Market Knowledge\n{build_knowledge_context(asset_name)}"
     # 记忆
     mem_sec = f"## Memory & Context\n{memory_context}" if memory_context else ""
     # 组装
@@ -150,7 +154,7 @@ def generate_decision_prompt(
         "Based on the above data and your personality, decide your next action. "
         "Respond with ONLY a valid JSON object."
     )
-    parts = [market_sec, pos_sec, port_sec]
+    parts = [market_sec, pos_sec, port_sec, knowledge_sec]
     if mem_sec:
         parts.append(mem_sec)
     parts.append(instruction)
