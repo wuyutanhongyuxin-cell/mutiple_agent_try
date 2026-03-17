@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo:*)",
+      "Bash(gh api:*)",
+      "Bash(cd:*)",
+      "Bash(pip install:*)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(pip list:*)",
+      "Bash(python:*)",
+      "Bash(where python:*)",
+      "Bash(where pip:*)",
+      "Bash(pip --version)",
+      "Bash(set NO_PROXY=*)",
+      "Bash(set HTTP_PROXY=)",
+      "Bash(set HTTPS_PROXY=)",
+      "Bash(unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy no_proxy NO_PROXY)",
+      "Bash(export NO_PROXY=*)",
+      "Bash(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy python -m pip install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com litellm loguru pytest pytest-asyncio rich aiogram pyyaml aiohttp python-dotenv \"redis[hiredis]\" pytest-cov)",
+      "Bash(for f:*)",
+      "Bash(do)",
+      "Read(//e/claude_ask/mutipel_agent_test1/**)",
+      "Bash(done)"
+    ]
+  }
+}

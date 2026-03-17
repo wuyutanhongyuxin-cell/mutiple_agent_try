@@ -1,0 +1,11 @@
+# LLM 配置
+llm:
+  provider: "anthropic"
+  model: "claude-sonnet-4-20250514"
+  temperature: 0.3
+  max_tokens: 1024
+  timeout_seconds: 30
+  retry_count: 3
+  retry_delay_seconds: 5
+  max_calls_per_agent_per_hour: 12
+  fallback_model: "gpt-4o-mini"

@@ -1,0 +1,19 @@
+# 交易参数配置
+trading:
+  assets:
+    major: ["BTC-PERP", "ETH-PERP"]
+    all: ["BTC-PERP", "ETH-PERP", "SOL-PERP", "ARB-PERP", "DOGE-PERP"]
+
+  data_feed:
+    type: "mock"                    # "mock" | "live"
+    source: "binance"
+    interval_seconds: 60
+    mock_csv_path: "data/btc_1h_2024.csv"
+
+  aggregator:
+    mode: "independent"             # "independent" | "voting"
+    signal_window_seconds: 120
+
+  risk:
+    global_max_drawdown_pct: 25
+    global_max_daily_loss_pct: 10
