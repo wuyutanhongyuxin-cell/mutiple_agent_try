@@ -185,3 +185,34 @@ class TestValidateSignal:
         signal = agent._validate_signal(raw, snapshot)
         assert signal is not None
         assert signal.action == Action.HOLD
+
+
+# ── 元反思触发逻辑 ──────────────────────────────────
+
+class TestMetaReflection:
+    """元反思触发条件测试。"""
+
+    def test_meta_not_triggered_before_30(self) -> None:
+        """30 笔之前不触发元反思（trade_count % 30 != 0）。"""
+        agent = _make_agent()
+        agent._trade_count = 20
+        assert agent._trade_count % 30 != 0
+
+    def test_meta_triggered_at_30(self) -> None:
+        """第 30 笔时应触发元反思。"""
+        agent = _make_agent()
+        agent._trade_count = 30
+        assert agent._trade_count % 30 == 0
+
+    def test_meta_triggered_at_60(self) -> None:
+        """第 60 笔时也应触发元反思。"""
+        agent = _make_agent()
+        agent._trade_count = 60
+        assert agent._trade_count % 30 == 0
+
+    def test_meta_not_triggered_at_10(self) -> None:
+        """第 10 笔只触发普通反思，不触发元反思。"""
+        agent = _make_agent()
+        agent._trade_count = 10
+        assert agent._trade_count % 10 == 0
+        assert agent._trade_count % 30 != 0

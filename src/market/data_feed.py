@@ -101,13 +101,37 @@ class MockDataFeed(DataFeed):
     """模拟数据源：从 CSV 加载历史数据，或生成随机行情。"""
 
     def __init__(self, csv_path: str = "", asset: str = "BTC-PERP",
-                 replay_speed: float = 1.0) -> None:
+                 replay_speed: float = 1.0,
+                 adversarial_scenarios: list[tuple[str, int]] | None = None) -> None:
         self._rows: list[dict[str, str]] = _load_csv(csv_path) if csv_path else []
         self._asset = asset
         self._index = 0
         self._replay_speed = replay_speed
         self._price_history: list[float] = []  # 维护价格历史用于精确 24h 变化
+        # 对抗性场景注入：修改 _rows 中的价格列
+        if adversarial_scenarios and self._rows:
+            self._inject_adversarial_scenarios(adversarial_scenarios)
         logger.info(f"MockDataFeed 初始化: {len(self._rows)} 条历史数据, 资产={asset}")
+
+    def _inject_adversarial_scenarios(
+        self, scenarios: list[tuple[str, int]]
+    ) -> None:
+        """将对抗性场景注入到 CSV 数据的价格列中。只修改价格，不改 timestamp/volume。"""
+        from src.market.adversarial import generate_adversarial_prices
+        for scenario_name, inject_at in scenarios:
+            if inject_at >= len(self._rows):
+                continue
+            base_price = float(self._rows[inject_at]["close"])
+            adv_prices = generate_adversarial_prices(base_price, scenario_name)  # type: ignore[arg-type]
+            for i, price in enumerate(adv_prices):
+                pos = inject_at + i
+                if pos >= len(self._rows):
+                    break
+                self._rows[pos]["close"] = str(price)
+                self._rows[pos]["high"] = str(max(price, float(self._rows[pos]["high"])))
+                self._rows[pos]["low"] = str(min(price, float(self._rows[pos]["low"])))
+                self._rows[pos]["open"] = str(price * 1.001)  # 微调 open 保持合理
+            logger.info(f"对抗性场景 '{scenario_name}' 注入到位置 {inject_at}")
 
     async def get_latest(self, asset: str) -> MarketSnapshot | None:
         """返回当前位置的行情数据。用 24 条前价格计算真实 24h 变化。"""

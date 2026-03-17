@@ -130,3 +130,29 @@ class TestGetContextForDecision:
         ctx = await memory.get_context_for_decision()
         assert "过早止损" in ctx
         assert "SEMANTIC MEMORY" in ctx
+
+    async def test_relevant_trades_with_reasoning(self, memory: AgentMemory) -> None:
+        """有 reasoning 的交易应通过 TF-IDF 被优先检索。"""
+        await memory.save_trade_to_l2({
+            "action": "BUY", "asset": "ETH-PERP",
+            "reasoning": "ETH showing strong momentum with DeFi growth",
+        })
+        await memory.save_trade_to_l2({
+            "action": "BUY", "asset": "BTC-PERP",
+            "reasoning": "BTC bullish pattern RSI oversold",
+        })
+        trades = await memory.get_relevant_trades("BTC-PERP", "BUY", count=2)
+        # BTC 交易应排在 ETH 前面（asset 匹配 + reasoning 匹配）
+        assert len(trades) >= 1
+        assert trades[0].get("asset") == "BTC-PERP"
+
+    async def test_relevant_trades_empty(self, memory: AgentMemory) -> None:
+        """无交易记录时返回空列表。"""
+        trades = await memory.get_relevant_trades("BTC-PERP", "BUY", count=5)
+        assert trades == []
+
+    async def test_relevant_trades_single_trade(self, memory: AgentMemory) -> None:
+        """只有 1 条交易时也能正常返回。"""
+        await memory.save_trade_to_l2({"action": "BUY", "asset": "BTC-PERP"})
+        trades = await memory.get_relevant_trades("BTC-PERP", "BUY", count=5)
+        assert len(trades) == 1

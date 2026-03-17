@@ -13,7 +13,7 @@ from loguru import logger
 from src.agent.base_agent import BaseAgent
 from src.agent.memory import AgentMemory
 from src.agent.multi_sample import vote_on_actions
-from src.agent.reflection import generate_reflection
+from src.agent.reflection import generate_meta_reflection, generate_reflection
 from src.execution.signal import Action, TradeSignal
 from src.integration.redis_bus import RedisBus
 from src.market.data_feed import DataFeed, MarketSnapshot
@@ -243,7 +243,7 @@ class TradingAgent(BaseAgent):
     # ── 反思（每 10 笔交易触发） ──────────────────────
 
     async def _trigger_reflection(self) -> None:
-        """调用反思模块，结果存入 L3 记忆。"""
+        """调用反思模块，结果存入 L3 记忆。每 30 笔额外触发元反思。"""
         recent = await self._memory.get_recent_trades(count=10)
         result = await generate_reflection(
             self._name, self._profile, recent, self._llm_config,
@@ -251,3 +251,19 @@ class TradingAgent(BaseAgent):
         if result and "summary" in result:
             await self._memory.add_reflection(result["summary"])
             logger.info(f"[{self._name}] 第 {self._trade_count} 笔，反思完成")
+        # 每 30 笔交易触发元反思
+        if self._trade_count % 30 == 0:
+            await self._trigger_meta_reflection()
+
+    async def _trigger_meta_reflection(self) -> None:
+        """调用元反思模块，对最近 3 条 L3 反思进行二阶反思。"""
+        reflections = await self._memory._get_reflections(count=3)
+        if len(reflections) < 3:
+            return  # 反思不足 3 条，跳过
+        result = await generate_meta_reflection(
+            self._name, self._profile, reflections, self._llm_config,
+        )
+        if result and "meta_summary" in result:
+            meta_entry = f"[META] {result['meta_summary']}"
+            await self._memory.add_reflection(meta_entry)
+            logger.info(f"[{self._name}] 第 {self._trade_count} 笔，元反思完成")

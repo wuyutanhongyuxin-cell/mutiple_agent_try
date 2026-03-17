@@ -18,7 +18,7 @@ trading:
     slippage_bps: 5              # 滑点 basis points (5 = 0.05%)
     taker_fee_rate: 0.0004       # Taker 手续费 0.04%
     maker_fee_rate: 0.0002       # Maker 手续费 0.02%
-    funding_rate_8h: 0.00015     # 8h资金费率 0.015% (2024 BTC-USDT 均值约 0.017%)
+    funding_rate_8h: 0.00015     # 8h资金费率 0.015% (保守估计, 2024实际约 0.01-0.017%/8h, BitMEX数据显示78%时间锚定0.01%)
     enable_costs: true           # false 可关闭（用于对比实验）
 
   anonymize: false               # true 启用资产匿名化（回测建议开启）

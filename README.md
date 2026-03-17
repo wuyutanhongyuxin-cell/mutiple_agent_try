@@ -5,7 +5,7 @@
 > A Multi-Agent Crypto Paper Trading System driven by Big Five (OCEAN) Personality Model
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-148%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-174%20passed-brightgreen.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -118,16 +118,17 @@ personality-trading-agents/
 ├── src/
 │   ├── personality/             # OCEAN model, constraint mapping, prompt generation (w/ hash)
 │   ├── agent/                   # Trading agent, multi-sample voting, 3-layer memory, reflection
-│   ├── market/                  # Data feeds (Mock/Live), technical indicators
+│   ├── market/                  # Data feeds (Mock/Live), technical indicators, adversarial scenarios
 │   ├── execution/               # Signal, paper trader, aggregator, risk mgr, cost model, drift monitor
 │   ├── integration/             # Redis pub/sub, Telegram (signals + drift alerts + cost reports)
-│   ├── utils/                   # Config loader, logger, asset anonymizer, trade logger
+│   ├── utils/                   # Config loader, logger, asset anonymizer, trade logger, TF-IDF engine
 │   └── main.py                  # System entry point
-├── tests/                       # 148 tests covering all modules
+├── tests/                       # 174 tests covering all modules
 ├── scripts/
 │   ├── dashboard.py             # Rich terminal real-time dashboard
 │   ├── backtest.py              # Rule-based historical backtesting
-│   ├── llm_backtest.py          # Real LLM backtesting with consistency metrics
+│   ├── llm_backtest.py          # Real LLM backtesting with consistency metrics + multi-market
+│   ├── generate_synthetic_data.py # Generate synthetic bear/sideways/bull CSV data
 │   └── create_agents_config.py  # Bulk config generation
 └── pyproject.toml
 ```
@@ -147,7 +148,7 @@ After the initial implementation, the system underwent a comprehensive hardening
 | Slippage | 5 bps (0.05%) | Market microstructure |
 | Taker fee | 0.04% | Binance perpetual futures |
 | Maker fee | 0.02% | Binance perpetual futures |
-| Funding rate | 0.015% / 8h | 2024 BTC-USDT average (~0.017%) |
+| Funding rate | 0.015% / 8h | Conservative est., 2024 actual ~0.01-0.017%/8h, BitMEX 78% anchored at 0.01% |
 
 **Asset Anonymization** (`anonymizer.py`): Replaces `BTC-PERP` with `ASSET_A` in prompts to prevent LLM from recalling historical price data. Profit Mirage (2025) showed 51-62% Sharpe decay when removing name-based look-ahead bias.
 
@@ -178,7 +179,7 @@ Outputs per-agent: avg PnL, PnL std, action agreement rate, pass^k metric.
 
 ### C. Memory System Upgrades
 
-**Relevance-Based Retrieval** (replaces pure FIFO): L2 episodic memory now scores historical trades by relevance — same asset (+3), same action (+2), has PnL data (+1) — instead of just "most recent N".
+**TF-IDF Hybrid Retrieval** (replaces pure rule-based scoring): L2 episodic memory uses a hybrid of TF-IDF semantic similarity (50%) and rule-based scoring (50%) — same asset (+0.5), same action (+0.33), has PnL data (+0.17) — with time decay (0.95^position). Pure Python implementation, no sklearn/numpy.
 
 **Exponential Decay**: L3 semantic memory applies decay weights (alpha=0.98 per position). Recent reflections display in full; older ones show first 50 characters.
 
@@ -200,12 +201,43 @@ Global risk manager now includes `check_agent_risk()`: monitors individual agent
 
 ---
 
+## P0: Adversarial Testing (TradeTrap-inspired)
+
+**Adversarial Scenario Generator** (`adversarial.py`): 5 extreme market scenarios based on verified real BTC events:
+
+| Scenario | Real Event | Effect |
+|----------|-----------|--------|
+| Flash Crash | 2024.3.19 BitMEX: $67K→$8.9K in 2min (spot only) | Single candle -15% |
+| Pump | 2024.12.5: BTC breaks $100K | 3 consecutive +5% candles |
+| Fake Breakout | 2024 Q1 Grayscale GBTC sell-off | +5% then -9%, net -4% |
+| Sideways | 2023 Q3: BTC $25K-$30K range, 50 days | ±1% random per bar |
+| V-Reversal | 2024.12: $100K→$93K→$100K | -6% then +6.5% recovery |
+
+**Multi-Market Backtest**: Generate synthetic bear/sideways/bull data and run cross-market comparison:
+```bash
+python scripts/generate_synthetic_data.py --csv data/btc_1h_2024.csv --output data/
+python scripts/llm_backtest.py --csv data/btc_bull.csv --runs 3 --multi-market --anonymize
+```
+
+---
+
+## P1: Advanced Memory & Meta-Reflection
+
+**Two-Layer Reflection**: Beyond single-pass reflection (every 10 trades), the system performs **meta-reflection** every 30 trades — analyzing patterns across multiple reflections, identifying strategy evolution and recurring blind spots. Meta-reflections are marked with `[META]` in L3 memory.
+
+**TF-IDF Memory Retrieval** (`tfidf.py`): Pure Python implementation replacing hand-crafted rules. Combines semantic similarity with rule-based scoring:
+- TF-IDF cosine similarity on trade reasoning text (50% weight)
+- Rule bonuses: same asset (+0.5), same action (+0.33), has PnL (+0.17) (50% weight)
+- Time decay: 0.95^position (newer trades weighted higher)
+
+---
+
 ## Three-Layer Memory System (FinMem-inspired)
 
 | Layer | Name | Content | Capacity | Storage | Retrieval |
 |-------|------|---------|----------|---------|-----------|
 | L1 | Working | Recent 20 ticks + last 5 trade results | 20+5 | In-memory | Full (every decision) |
-| L2 | Episodic | Full trade records (price, PnL, reasoning) | 50 trades | Redis | Relevance-scored |
+| L2 | Episodic | Full trade records (price, PnL, reasoning) | 50 trades | Redis | TF-IDF hybrid |
 | L3 | Semantic | Reflection summaries (natural language) | 20 entries | Redis | Decay-weighted |
 
 ---
@@ -230,7 +262,7 @@ cp .env.example .env
 
 ```bash
 pytest tests/ -v
-# 148 tests should pass
+# 174 tests should pass
 ```
 
 ### 4. Start the System
@@ -296,7 +328,7 @@ max_cost_per_backtest_usd: 50  # hard cost cap for backtests
 | Notifications | aiogram 3.x | Telegram alerts + drift warnings |
 | Logging | loguru | Structured, colored output |
 | Dashboard | rich | Terminal UI |
-| Testing | pytest + pytest-asyncio | 148 tests, full coverage |
+| Testing | pytest + pytest-asyncio | 174 tests, full coverage |
 
 **Intentionally excluded**: pandas, numpy, django, flask, sqlalchemy (keeping it lightweight).
 
@@ -347,6 +379,19 @@ Example signal notification:
 - [x] Full-chain trade logging
 - [x] Relevance-based memory retrieval
 - [x] Exponential memory decay
+
+### P0 (Complete): Adversarial Testing & Multi-Market Backtest
+- [x] 5 adversarial scenarios (flash crash, pump, fake breakout, sideways, V-reversal) based on real BTC events
+- [x] MockDataFeed adversarial injection support
+- [x] Synthetic data generation (bear/sideways/bull markets from single CSV)
+- [x] `--multi-market` mode with cross-market comparison table
+- [x] Backtest cost cap enforcement (`max_cost_per_backtest_usd`)
+
+### P1 (Complete): Advanced Memory & Meta-Reflection
+- [x] Two-layer reflection: L1 reflection (every 10 trades) + L2 meta-reflection (every 30 trades)
+- [x] Meta-reflection analyzes patterns across reflections, identifies blind spots
+- [x] Pure Python TF-IDF engine (no sklearn/numpy) for semantic memory retrieval
+- [x] Hybrid retrieval: TF-IDF similarity (50%) + rule scoring (50%) + time decay
 
 ### Phase 2 (Future): Live Trading
 - [ ] Connect to real DEX (GRVT/Paradex)

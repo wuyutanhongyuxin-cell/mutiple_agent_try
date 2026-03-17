@@ -44,6 +44,43 @@
 
 ---
 
+## P0：对抗性测试 + 多市况回测 ✅
+
+### P0-1：对抗性场景注入 ✅
+- [x] `market/adversarial.py` — 5种对抗性场景（闪崩/暴涨/假突破/横盘/V反转）
+- [x] `market/data_feed.py` — MockDataFeed 支持 adversarial_scenarios 参数注入
+- [x] `tests/test_market/test_adversarial.py` — 9 个测试全部通过
+
+### P0-2：多时间窗口回测 ✅
+- [x] `scripts/generate_synthetic_data.py` — 从单CSV生成熊市/横盘/牛市合成数据
+- [x] `scripts/llm_backtest.py` — 新增 --multi-market 参数，跨市况对比
+- [x] `scripts/_backtest_helpers.py` — 新增 print_cross_market_results()
+- [x] `scripts/llm_backtest.py` — 成本上限执行逻辑（max_cost_per_backtest_usd）
+
+### Bug Fixes ✅
+- [x] `scripts/_backtest_helpers.py` — model_version → llm_model 字段名修复
+- [x] `config/trading.yaml` — funding_rate_8h 注释修正
+
+---
+
+## P1：高级记忆 + 元反思 ✅
+
+### P1-1：多层反思机制 ✅
+- [x] `agent/reflection.py` — 新增 generate_meta_reflection() 元反思
+- [x] `agent/trading_agent.py` — 每30笔交易触发元反思，[META]标记存入L3
+- [x] `tests/test_agent/test_trading_agent.py` — 4 个元反思测试
+
+### P1-2：TF-IDF 记忆检索 ✅
+- [x] `utils/tfidf.py` — 纯 Python TF-IDF + cosine similarity
+- [x] `agent/memory.py` — get_relevant_trades() 改为 TF-IDF 混合检索
+- [x] `tests/test_utils/test_tfidf.py` — 10 个 TF-IDF 测试
+- [x] `tests/test_agent/test_memory.py` — 3 个 TF-IDF 记忆检索测试
+
+### 测试 ✅
+- [x] 174 tests 全部通过（原148 + 新增26）
+
+---
+
 ## Phase 2（未来）
 - [ ] 接入真实DEX（GRVT/Paradex）
 - [ ] Agent人格动态进化（反思自动调参）

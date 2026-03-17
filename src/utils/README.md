@@ -1,12 +1,15 @@
 # utils — 工具模块
 
 ## 用途
-配置加载和日志配置。
+配置加载、日志、资产匿名化、交易日志和文本检索。
 
 ## 文件清单
 - `config_loader.py` — YAML 配置文件加载器（~42行）
 - `logger.py` — loguru 日志配置（~28行）
+- `anonymizer.py` — 资产匿名化防 look-ahead bias（~60行）
+- `trade_logger.py` — 全链路交易日志记录器（~58行）
+- `tfidf.py` — 纯 Python TF-IDF + Cosine Similarity（~90行）
 
 ## 依赖关系
-- 本目录依赖：pyyaml, loguru
+- 本目录依赖：pyyaml, loguru, pydantic
 - 被以下模块依赖：所有模块

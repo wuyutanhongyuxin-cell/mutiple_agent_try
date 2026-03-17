@@ -71,7 +71,7 @@ def validate_signal(
         reasoning=data.get("reasoning", ""),
         personality_influence=data.get("personality_influence", ""),
         ocean_profile=profile.model_dump(exclude={"name"}),
-        prompt_hash=prompt_hash, model_version=model,
+        prompt_hash=prompt_hash, llm_model=model,
     )
 
 
@@ -105,6 +105,34 @@ def calc_consistency(all_runs: list[dict[str, dict]]) -> dict[str, dict]:
             "sharpes": [run[aid]["sharpe"] for run in all_runs],
         }
     return report
+
+
+def print_cross_market_results(
+    market_results: dict[str, dict[str, dict]],
+) -> None:
+    """打印跨市况对比表。market_results = {market_name: consistency_report}"""
+    table = Table(title="跨市况对比")
+    table.add_column("Agent", style="cyan")
+    for market in market_results:
+        table.add_column(f"{market} PnL", justify="right")
+        table.add_column(f"{market} Sharpe", justify="right")
+    # 收集所有 agent_id
+    all_aids: set[str] = set()
+    for report in market_results.values():
+        all_aids.update(report.keys())
+    for aid in sorted(all_aids):
+        row: list[str] = []
+        name = ""
+        for market, report in market_results.items():
+            data = report.get(aid, {})
+            if not name:
+                name = data.get("name", aid)
+            row.append(f"${data.get('mean_pnl', 0):,.2f}")
+            sharpes = data.get("sharpes", [])
+            avg_sharpe = sum(sharpes) / len(sharpes) if sharpes else 0.0
+            row.append(f"{avg_sharpe:.3f}")
+        table.add_row(name, *row)
+    console.print(table)
 
 
 def print_results(all_runs: list[dict[str, dict]], consistency: dict) -> None:

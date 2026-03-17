@@ -5,7 +5,7 @@
 > 用心理学 Big Five (OCEAN) 人格模型驱动的多 Agent 加密货币纸上交易系统——每个 Agent 拥有独特性格，性格决定交易风格
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-148%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-174%20passed-brightgreen.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -129,16 +129,17 @@ personality-trading-agents/
 ├── src/
 │   ├── personality/             # 人格引擎：OCEAN 模型 + 约束映射 + Prompt 生成（含版本hash）
 │   ├── agent/                   # Agent 核心：交易 Agent + 多采样投票 + 三层记忆 + 反思
-│   ├── market/                  # 行情数据：Mock/Live 数据源 + 技术指标
+│   ├── market/                  # 行情数据：Mock/Live 数据源 + 技术指标 + 对抗性场景
 │   ├── execution/               # 执行层：信号 + 纸上交易 + 聚合 + 风控 + 成本模型 + 漂移检测
 │   ├── integration/             # 外部集成：Redis 消息总线 + Telegram（信号+漂移+成本告警）
-│   ├── utils/                   # 工具：配置 + 日志 + 资产匿名化 + 全链路日志
+│   ├── utils/                   # 工具：配置 + 日志 + 资产匿名化 + 全链路日志 + TF-IDF 引擎
 │   └── main.py                  # 主入口
-├── tests/                       # 148 个测试，覆盖全部模块
+├── tests/                       # 174 个测试，覆盖全部模块
 ├── scripts/
 │   ├── dashboard.py             # Rich 终端实时仪表盘
 │   ├── backtest.py              # 规则回测
-│   ├── llm_backtest.py          # LLM 真实回测（多次运行 + 一致性报告）
+│   ├── llm_backtest.py          # LLM 真实回测（多次运行 + 一致性 + 多市况）
+│   ├── generate_synthetic_data.py # 合成多市况数据（熊市/横盘/牛市）
 │   └── create_agents_config.py  # 批量生成 Agent 配置
 └── pyproject.toml
 ```
@@ -158,7 +159,7 @@ personality-trading-agents/
 | 滑点 | 5 bps (0.05%) | 市场微观结构 |
 | Taker 手续费 | 0.04% | Binance 永续合约 |
 | Maker 手续费 | 0.02% | Binance 永续合约 |
-| 资金费率 | 0.015% / 8h | 2024 BTC-USDT 实际均值（~0.017%） |
+| 资金费率 | 0.015% / 8h | 保守估计，2024 实际约 0.01-0.017%/8h，BitMEX 78% 时间锚定 0.01% |
 
 **资产匿名化**（`anonymizer.py`）：Prompt 中将 `BTC-PERP` 替换为 `ASSET_A`，防止 LLM 回忆历史价格。Profit Mirage (2025) 实测去除名称偏差后 Sharpe 衰减 51-62%。
 
@@ -189,7 +190,7 @@ python scripts/llm_backtest.py --csv data/btc_1h_2024.csv --runs 3 --agents 3 --
 
 ### C. 记忆系统升级
 
-**相关性检索**（替代纯 FIFO）：L2 情节记忆按相关性评分检索——同资产(+3)、同 action(+2)、有盈亏数据(+1)——而非只取"最近 N 条"。
+**TF-IDF 混合检索**（替代纯规则评分）：L2 情节记忆使用 TF-IDF 语义相似度(50%) + 规则评分(50%)——同资产(+0.5)、同 action(+0.33)、有盈亏(+0.17)——加上时间衰减(0.95^position)。纯 Python 实现，无需 sklearn/numpy。
 
 **指数衰减**：L3 语义记忆应用衰减权重（alpha=0.98）。近期反思完整展示，远期反思只显示前 50 字符。
 
@@ -211,12 +212,43 @@ python scripts/llm_backtest.py --csv data/btc_1h_2024.csv --runs 3 --agents 3 --
 
 ---
 
+## P0：对抗性压力测试（TradeTrap 启发）
+
+**对抗性场景生成器**（`adversarial.py`）：5 种基于真实 BTC 极端事件的压力测试场景：
+
+| 场景 | 真实原型 | 效果 |
+|------|---------|------|
+| 闪崩 | 2024.3.19 BitMEX：$67K→$8.9K（2分钟，仅现货） | 单根 K 线 -15% |
+| 暴涨 | 2024.12.5 BTC 突破 $100K | 连续 3 根 +5% |
+| 假突破 | 2024 Q1 Grayscale GBTC 抛售期 | 先涨+5% 再跌-9%，净-4% |
+| 极端横盘 | 2023 Q3 BTC $25K-$30K 区间 50 天 | 每根 ±1% 随机 |
+| V 型反转 | 2024.12 BTC $100K→$93K→$100K | 先跌-6% 再涨+6.5% |
+
+**多市况回测**：从单个 CSV 生成熊市/横盘/牛市合成数据，跨市况对比：
+```bash
+python scripts/generate_synthetic_data.py --csv data/btc_1h_2024.csv --output data/
+python scripts/llm_backtest.py --csv data/btc_bull.csv --runs 3 --multi-market --anonymize
+```
+
+---
+
+## P1：高级记忆 + 元反思
+
+**两层反思机制**：在常规反思（每 10 笔交易）之上，每 30 笔交易触发**元反思**——分析多次反思之间的模式、策略演化和反复出现的盲点。元反思以 `[META]` 标记存入 L3 记忆。
+
+**TF-IDF 记忆检索**（`tfidf.py`）：纯 Python 实现，替代手写规则。结合语义和规则评分：
+- TF-IDF 余弦相似度计算交易 reasoning 文本匹配（50% 权重）
+- 规则加分：同资产(+0.5)、同 action(+0.33)、有盈亏(+0.17)（50% 权重）
+- 时间衰减：0.95^position（越新的交易权重越高）
+
+---
+
 ## 三层记忆系统（FinMem 启发）
 
 | 层级 | 名称 | 内容 | 容量 | 存储 | 检索方式 |
 |------|------|------|------|------|---------|
 | L1 | 工作记忆 | 最近 20 条 tick + 最近 5 次交易结果 | 20+5 | 内存 | 全量（每次决策） |
-| L2 | 情节记忆 | 完整交易记录（价格、盈亏、reasoning） | 50 笔 | Redis | 相关性评分检索 |
+| L2 | 情节记忆 | 完整交易记录（价格、盈亏、reasoning） | 50 笔 | Redis | TF-IDF 混合检索 |
 | L3 | 语义记忆 | 反思总结（自然语言） | 20 条 | Redis | 指数衰减加权 |
 
 **记忆隔离**：每个 Agent 的记忆完全独立，互不共享，确保性格差异不被稀释。
@@ -246,7 +278,7 @@ cp .env.example .env
 
 ```bash
 pytest tests/ -v
-# 应该看到 148 passed
+# 应该看到 174 passed
 ```
 
 ### 4. 启动系统
@@ -312,7 +344,7 @@ max_cost_per_backtest_usd: 50  # 回测成本硬上限
 | 通知推送 | aiogram 3.x | Telegram 实时告警 + 漂移告警 |
 | 日志 | loguru | 结构化彩色输出 |
 | 仪表盘 | rich | 终端实时 UI |
-| 测试 | pytest + pytest-asyncio | 148 个测试，全模块覆盖 |
+| 测试 | pytest + pytest-asyncio | 174 个测试，全模块覆盖 |
 
 **刻意不用的依赖**：pandas、numpy、django、flask、sqlalchemy——保持轻量。
 
@@ -345,6 +377,7 @@ max_cost_per_backtest_usd: 50  # 回测成本硬上限
      - 更新 L1 + L2 记忆
      - 检查行为漂移
  10. 每 10 笔交易 → 触发反思 → 更新 L3 记忆
+ 11. 每 30 笔交易 → 触发元反思（分析多次反思的模式）→ [META] 标记存入 L3
 ```
 
 ---
@@ -405,6 +438,19 @@ Action KL=0.312 > critical(0.2)
 - [x] 全链路交易日志
 - [x] 相关性记忆检索
 - [x] 指数记忆衰减
+
+### P0（完成）：对抗性测试 + 多市况回测
+- [x] 5 种对抗性场景（闪崩/暴涨/假突破/横盘/V 反转），基于真实 BTC 事件
+- [x] MockDataFeed 对抗性场景注入支持
+- [x] 合成数据生成（从单 CSV 生成熊市/横盘/牛市）
+- [x] `--multi-market` 模式 + 跨市况对比表
+- [x] 回测成本硬上限执行（`max_cost_per_backtest_usd`）
+
+### P1（完成）：高级记忆 + 元反思
+- [x] 两层反思：L1 反思（每 10 笔）+ L2 元反思（每 30 笔）
+- [x] 元反思分析反思间的模式，识别策略演化和盲点
+- [x] 纯 Python TF-IDF 引擎（无 sklearn/numpy）
+- [x] 混合检索：TF-IDF 语义相似度(50%) + 规则评分(50%) + 时间衰减
 
 ### Phase 2（未来）：实盘交易
 - [ ] 接入真实 DEX（GRVT/Paradex）

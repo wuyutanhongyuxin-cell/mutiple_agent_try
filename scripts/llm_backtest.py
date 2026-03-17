@@ -42,6 +42,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--agents", type=int, default=3, help="使用前 N 个预定义原型")
     p.add_argument("--anonymize", action="store_true", help="启用资产匿名化")
     p.add_argument("--max-steps", type=int, default=500, help="最大回测步数")
+    p.add_argument("--multi-market", action="store_true",
+                   help="启用多市况回测（需要 data/ 下有 btc_bear.csv, btc_sideways.csv, btc_bull.csv）")
     return p.parse_args()
 
 
@@ -121,6 +123,11 @@ async def _run_single_backtest(
     max_tokens = llm.get("max_tokens", 1024)
     rpm = llm.get("max_calls_per_minute", 20)
     sleep_between = 60.0 / rpm if rpm > 0 else 3.0
+    # 成本硬上限：每次 LLM 调用估算 $0.0135 (input 2000*$3/M + output 500*$15/M)
+    cost_cap = llm.get("max_cost_per_backtest_usd", 50.0)
+    per_call_cost = (2000 * 3 + 500 * 15) / 1_000_000  # $0.0135
+    accumulated_cost = 0.0
+    cost_cap_reached = False
     cost_raw = trading_cfg.get("trading", {}).get("costs", {})
     trader = PaperTrader(cost_config=CostConfig(**cost_raw) if cost_raw else CostConfig())
     all_assets = global_cfg["all_assets"]
@@ -142,6 +149,8 @@ async def _run_single_backtest(
     # 步进回测主循环
     feed = MockDataFeed(csv_path=feed_path, asset="BTC-PERP")
     for step in range(max_steps):
+        if cost_cap_reached:
+            break
         snapshot = await feed.get_latest("BTC-PERP")
         if snapshot is None:
             break
@@ -153,6 +162,13 @@ async def _run_single_backtest(
             if step % interval_steps != 0:
                 agent["actions"].append("SKIP")
                 continue
+            accumulated_cost += per_call_cost
+            if accumulated_cost > cost_cap:
+                cost_cap_reached = True
+                console.print(
+                    f"  [bold red][COST CAP REACHED] "
+                    f"累计 ${accumulated_cost:.2f} > ${cost_cap:.2f}，停止回测[/bold red]")
+                break
             await _run_agent_step(
                 agent, snapshot, trader, anonymizer, model, temperature, max_tokens)
             await asyncio.sleep(sleep_between)  # 限流
@@ -168,8 +184,39 @@ async def _run_single_backtest(
             "sharpe": stats["sharpe_ratio"],
             "trades": stats["total_trades"],
             "actions": agent["actions"],
+            "cost_cap_reached": cost_cap_reached,
+            "estimated_llm_cost": round(accumulated_cost, 4),
         }
+    if cost_cap_reached:
+        logger.warning(f"回测在步骤 {step} 因成本上限 ${cost_cap} 提前终止")
     return results
+
+
+async def _run_multi_market(
+    profiles: list[OceanProfile], args: argparse.Namespace,
+    trading_cfg: dict, llm_cfg: dict,
+) -> None:
+    """多市况模式：对 bear/sideways/bull 三种市况分别回测并输出跨市况对比。"""
+    from _backtest_helpers import print_cross_market_results
+    market_files = {
+        "bear": "data/btc_bear.csv",
+        "sideways": "data/btc_sideways.csv",
+        "bull": "data/btc_bull.csv",
+    }
+    market_results: dict[str, dict[str, dict]] = {}
+    for market_name, csv_path in market_files.items():
+        console.print(f"\n[bold magenta]===== 市况: {market_name} ({csv_path}) =====[/bold magenta]")
+        all_runs: list[dict[str, dict]] = []
+        for run_idx in range(args.runs):
+            console.print(f"\n[bold yellow]-- {market_name} Run {run_idx + 1}/{args.runs} --[/bold yellow]")
+            result = await _run_single_backtest(
+                profiles, csv_path, args.max_steps, args.anonymize, trading_cfg, llm_cfg)
+            all_runs.append(result)
+        consistency = calc_consistency(all_runs) if len(all_runs) > 1 else {}
+        print_results(all_runs, consistency)
+        market_results[market_name] = consistency
+    # 跨市况对比
+    print_cross_market_results(market_results)
 
 
 async def main() -> None:
@@ -180,6 +227,9 @@ async def main() -> None:
     profiles = _select_profiles(args.agents)
     console.print(f"[bold]LLM 回测启动[/bold]: {args.runs} 轮 x {len(profiles)} 个 Agent")
     console.print(f"  CSV: {args.csv} | 最大步数: {args.max_steps} | 匿名化: {args.anonymize}")
+    if args.multi_market:
+        await _run_multi_market(profiles, args, trading_cfg, llm_cfg)
+        return
     all_runs: list[dict[str, dict]] = []
     for run_idx in range(args.runs):
         console.print(f"\n[bold yellow]-- Run {run_idx + 1}/{args.runs} --[/bold yellow]")

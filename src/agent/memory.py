@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from src.utils.tfidf import rank_by_similarity
+
 if TYPE_CHECKING:
     from src.integration.redis_bus import RedisBus
 
@@ -92,23 +94,41 @@ class AgentMemory:
     async def get_relevant_trades(
         self, current_asset: str, current_action: str, count: int = 5
     ) -> list[dict]:
-        """检索与当前决策最相关的历史交易（而非最新的）。
+        """检索与当前决策最相关的历史交易。
 
-        评分规则：同资产+3, 同action+2, 有盈亏记录+1, 时间衰减-0.1×天数(最多-2)
+        混合策略：TF-IDF 语义相似度(50%) + 规则加分(50%) + 时间衰减。
         """
         all_trades = await self.get_recent_trades(count=_L2_TRADE_LIMIT)
         if not all_trades:
             return []
+        # TF-IDF 相似度（需要 >=2 个文档才有意义）
+        query = f"{current_action} {current_asset}"
+        docs = [
+            f"{t.get('action', '')} {t.get('asset', '')} {t.get('reasoning', '')}"
+            for t in all_trades
+        ]
+        tfidf_scores: dict[int, float] = {}
+        if len(docs) >= 2:
+            ranked = rank_by_similarity(query, docs, top_k=len(docs))
+            tfidf_scores = {idx: sim for idx, sim in ranked}
+        # 混合评分
         scored: list[tuple[float, dict]] = []
-        for t in all_trades:
-            score = 0.0
+        for i, t in enumerate(all_trades):
+            # 规则分（归一化到 0~1）
+            rule = 0.0
             if t.get("asset") == current_asset:
-                score += 3.0
+                rule += 0.5
             if str(t.get("action", "")).upper() == current_action.upper():
-                score += 2.0
+                rule += 0.33
             if "pnl" in t:
-                score += 1.0
-            scored.append((score, t))
+                rule += 0.17
+            # TF-IDF 分
+            tfidf = tfidf_scores.get(i, 0.0)
+            # 混合：各占 50%
+            final = tfidf * 0.5 + rule * 0.5
+            # 时间衰减（index 0 = 最新）
+            final *= 0.95 ** i
+            scored.append((final, t))
         scored.sort(key=lambda x: x[0], reverse=True)
         return [t for _, t in scored[:count]]
 
